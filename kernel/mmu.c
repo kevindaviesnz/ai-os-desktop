@@ -22,7 +22,10 @@ static uint64_t l1_table[ 512 ]        __attribute__((aligned(PAGE_SIZE)));
 static uint64_t l2_table_user[ 512 ]   __attribute__((aligned(PAGE_SIZE)));
 static uint64_t l2_table_kernel[ 512 ] __attribute__((aligned(PAGE_SIZE)));
 static uint64_t l3_table_mmio[ 512 ]   __attribute__((aligned(PAGE_SIZE)));
-static uint64_t l3_table_fb[ 512 ]     __attribute__((aligned(PAGE_SIZE)));
+
+/* FIX: Two L3 tables to support up to 4MB of framebuffer */
+static uint64_t l3_table_fb_0[ 512 ]   __attribute__((aligned(PAGE_SIZE)));
+static uint64_t l3_table_fb_1[ 512 ]   __attribute__((aligned(PAGE_SIZE)));
 
 void mmu_init_tables(void) {
     /* Step 0: Zero all tables */
@@ -31,7 +34,8 @@ void mmu_init_tables(void) {
         l2_table_kernel[ i ] = 0;
         l2_table_user[ i ]   = 0;
         l3_table_mmio[ i ]   = 0;
-        l3_table_fb[ i ]     = 0;
+        l3_table_fb_0[ i ]   = 0;
+        l3_table_fb_1[ i ]   = 0;
     }
 
     /* Step 1: L1 — index 1 covers 0x40000000 (kernel), index 0 covers 0x00000000 (devices) */
@@ -44,8 +48,7 @@ void mmu_init_tables(void) {
                              | ATTR_NORMAL | AP_RW_EL1 | DESC_AF | DESC_BLOCK | DESC_VALID;
     }
 
-    /* Step 3: FIX — remap the entire region covering .el0_user_text AND the EL0 stack 
-       with AP_RW_ANY so the CPU can execute and push to the stack without a Data Abort */
+    /* Step 3: Map the dynamically aligned EL0 region with AP_RW_ANY */
     {
         uint64_t el0_start   = (uint64_t)_el0_region_start;
         uint64_t el0_end     = (uint64_t)_el0_region_end;
@@ -61,18 +64,14 @@ void mmu_init_tables(void) {
     }
 
     /* Step 4: GIC (0x08000000) */
-    l2_table_user[ 64 ] = 0x08000000ULL
-                        | ATTR_DEVICE | AP_RW_EL1 | DESC_AF | DESC_BLOCK | DESC_VALID;
+    l2_table_user[ 64 ] = 0x08000000ULL | ATTR_DEVICE | AP_RW_EL1 | DESC_AF | DESC_BLOCK | DESC_VALID;
 
     /* Step 5: UART (0x09000000) */
-    l2_table_user[ 72 ] = 0x09000000ULL
-                        | ATTR_DEVICE | AP_RW_EL1 | DESC_AF | DESC_BLOCK | DESC_VALID;
+    l2_table_user[ 72 ] = 0x09000000ULL | ATTR_DEVICE | AP_RW_EL1 | DESC_AF | DESC_BLOCK | DESC_VALID;
 
     /* Step 6: DMA heap (0x50000000 - 0x503FFFFF) */
-    l2_table_kernel[ 128 ] = 0x50000000ULL
-                           | ATTR_DEVICE | AP_RW_EL1 | DESC_AF | DESC_BLOCK | DESC_VALID;
-    l2_table_kernel[ 129 ] = 0x50200000ULL
-                           | ATTR_DEVICE | AP_RW_EL1 | DESC_AF | DESC_BLOCK | DESC_VALID;
+    l2_table_kernel[ 128 ] = 0x50000000ULL | ATTR_DEVICE | AP_RW_EL1 | DESC_AF | DESC_BLOCK | DESC_VALID;
+    l2_table_kernel[ 129 ] = 0x50200000ULL | ATTR_DEVICE | AP_RW_EL1 | DESC_AF | DESC_BLOCK | DESC_VALID;
 
     /* Step 7: VirtIO MMIO (0x0A000000) — 4KB pages via L3 */
     l2_table_user[ 80 ] = (uint64_t)l3_table_mmio | DESC_TABLE | DESC_VALID;
@@ -108,13 +107,21 @@ void mmu_init_tables(void) {
 void mmu_map_framebuffer(uint64_t phys_addr, uint64_t size) {
     if (!phys_addr) return;
 
-    l2_table_user[ 256 ] = (uint64_t)l3_table_fb | DESC_TABLE | DESC_VALID;
+    /* 256 covers 0x20000000 - 0x201FFFFF (First 2MB)
+       257 covers 0x20200000 - 0x203FFFFF (Next 2MB) */
+    l2_table_user[ 256 ] = (uint64_t)l3_table_fb_0 | DESC_TABLE | DESC_VALID;
+    l2_table_user[ 257 ] = (uint64_t)l3_table_fb_1 | DESC_TABLE | DESC_VALID;
 
     for (uint64_t offset = 0; offset < size; offset += PAGE_SIZE) {
-        uint32_t idx = (uint32_t)(offset / PAGE_SIZE);
-        if (idx < 512) {
-            l3_table_fb[ idx ] = (phys_addr + offset)
-                               | ATTR_NORMAL | AP_RW_ANY | DESC_AF | DESC_PAGE | DESC_VALID;
+        uint32_t page_idx = (uint32_t)(offset / PAGE_SIZE);
+        
+        if (page_idx < 512) {
+            l3_table_fb_0[ page_idx ] = (phys_addr + offset)
+                                      | ATTR_NORMAL | AP_RW_ANY | DESC_AF | DESC_PAGE | DESC_VALID;
+        } 
+        else if (page_idx < 1024) {
+            l3_table_fb_1[ page_idx - 512 ] = (phys_addr + offset)
+                                            | ATTR_NORMAL | AP_RW_ANY | DESC_AF | DESC_PAGE | DESC_VALID;
         }
     }
 

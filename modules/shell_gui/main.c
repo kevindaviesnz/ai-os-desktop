@@ -213,8 +213,8 @@ ATTR_EL0 void term_print(term_ctx_t *ctx, const char *str) {
 ATTR_EL0_ENTRY int shell_main(void) {
     term_ctx_t ctx;
     ctx.framebuffer   = (uint32_t *)0x20000000;
-    ctx.screen_width  = 1024;
-    ctx.screen_height = 768;
+    ctx.screen_width  = 1280;  /* <-- Match QEMU's native width  */
+    ctx.screen_height = 800;   /* <-- Match QEMU's native height */
     ctx.cursor_x      = 0;
     ctx.cursor_y      = 0;
 

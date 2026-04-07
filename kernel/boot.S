@@ -1,9 +1,9 @@
 /* Allocate a safe 16KB stack in RAM */
 .section .bss
-.balign 16          /* Resolves BLOCKER-23: Aligns to exactly 16 bytes */
+.balign 16
 stack_bottom:
 .skip 16384  
-stack_top:          /* Resolves ADVISORY-11: Establishes local source of truth */
+stack_top:
 
 .section .text.boot
 .global _start

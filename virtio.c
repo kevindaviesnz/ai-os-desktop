@@ -114,6 +114,8 @@ void gpu_init(void) {
     uint32_t fb_width  = *(volatile uint32_t *)((uint8_t *)resp_info + 32);
     uint32_t fb_height = *(volatile uint32_t *)((uint8_t *)resp_info + 36);
     
+    if (fb_width == 0 || fb_height == 0) { fb_width = 1280; fb_height = 800; }
+    
     if (fb_width == 0 || fb_height == 0) {
         fb_width = 1024;
         fb_height = 768;

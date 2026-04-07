@@ -169,7 +169,7 @@ struct virtio_gpu_resource_attach_backing {
 } __attribute__((packed));
 
 void virtio_probe_and_init(void);
-void virtio_input_poll(void);
+char virtio_input_poll(void);
 void virtio_gpu_flush(void);
 
 #endif

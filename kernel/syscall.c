@@ -6,7 +6,7 @@
 #define REG_X1 1
 #define REG_X8 8
 
-const uint8_t capability_matrix[MODULE_COUNT][MODULE_COUNT] = {
+const uint8_t capability_matrix[ MODULE_COUNT ][ MODULE_COUNT ] = {
     /* KRN  UAR  SHL   FS  ISO  CRD  CMP  INP  GUI */
     /* KERNEL  */ { 1,   1,   1,   1,   1,   1,   1,   1,   1 },
     /* UART    */ { 1,   0,   1,   0,   0,   0,   0,   0,   0 },
@@ -23,56 +23,35 @@ extern int get_region_for_current_module(void);
 extern int is_valid_el0_pointer(uint64_t ptr, uint64_t size);
 extern void kpanic(const char *msg);
 extern int virtio_blk_read_sector(uint64_t sector, uint8_t *buffer);
+extern void virtio_gpu_flush(void);
+extern char virtio_input_poll(void);
 
-void syscall_handler(uint64_t *regs) {
-    uint64_t syscall_id = regs[REG_X8];
-    uint64_t arg0       = regs[REG_X0];
-    uint64_t arg1       = regs[REG_X1];
+void syscall_handler(uint64_t *sp) {
+    /* * sp[ 8 ] contains register x8 (Syscall Number)
+     * sp[ 0 ] contains register x0 (Arg 0, usually the struct pointer)
+     */
+    uint64_t syscall_num = sp[ 8 ];
+    uint64_t arg0 = sp[ 0 ];
 
-    int caller_id = get_region_for_current_module();
-    if (caller_id < 0) return; 
-    
-    switch (syscall_id) {
-        case SYS_IPC_SEND:
-            if (arg1 >= MODULE_COUNT || capability_matrix[caller_id][arg1] == 0) {
-                regs[REG_X0] = (uint64_t)-1;
-                return; 
-            }
-            regs[REG_X0] = 0;
-            break;
+    if (syscall_num == SYS_GPU_FLUSH) {
+        virtio_gpu_flush();
+    }
+    else if (syscall_num == SYS_IPC_RECV) {
+        /* Future Phase: Re-enable pointer security validation here */
+        /* if (!is_valid_el0_pointer(arg0, sizeof(os_message_t))) kpanic("Invalid IPC ptr"); */
 
-        case SYS_CACHE_CLEAN:
-            if (!is_valid_el0_pointer(arg0, arg1)) {
-                kpanic("Security Violation: Module attempted to flush memory outside its mapped domain.");
-            }
-            
-            uint64_t start_aligned = arg0 & ~(63ULL);
-            uint64_t end = arg0 + arg1;
-            for (uint64_t addr = start_aligned; addr < end; addr += 64) {
-                __asm__ volatile("dc cvac, %0" : : "r"(addr) : "memory");
-            }
-            __asm__ volatile("dsb sy\n\tisb\n\t" ::: "memory");
-            regs[REG_X0] = 0;
-            break;
+        os_message_t *msg = (os_message_t *)arg0;
+        char c = virtio_input_poll();
 
-        case SYS_BLK_READ:
-            if (caller_id != SYS_MOD_FS) {
-                kpanic("Security Violation: Non-FS module attempted to read raw disk blocks.");
-            }
-            if (!is_valid_el0_pointer(arg1, 512)) {
-                regs[REG_X0] = (uint64_t)-1;
-                return;
-            }
-            regs[REG_X0] = virtio_blk_read_sector(arg0, (uint8_t *)arg1);
-            break;
-            
-        case SYS_GPU_FLUSH:
-            virtio_gpu_flush();
-            regs[REG_X0] = 0;
-            break;
-
-        default:
-            regs[REG_X0] = (uint64_t)-1;
-            break;
+        if (c != 0) {
+            /* Keystroke detected! Package it into the user's message struct */
+            msg->type = IPC_MSG_KEY_PRESS;
+            msg->length = 1;
+            msg->payload[ 0 ] = (uint8_t)c;
+        } else {
+            /* No input ready. Tell the shell to keep waiting. */
+            msg->type = 0; /* Assuming 0 represents IPC_MSG_NONE */
+            msg->length = 0;
+        }
     }
 }
