@@ -22,21 +22,25 @@ master_core:
     ldr     x0, =stack_top
     mov     sp, x0
 
-    /* 3. Load the Exception Vector Table */
+    /* 3. Enable FP/SIMD to prevent compiler zeroing loops from trapping */
+    mrs     x0, cpacr_el1
+    orr     x0, x0, #(3 << 20)
+    msr     cpacr_el1, x0
+
+    /* 4. Zero the BSS section to initialize C globals safely */
+    ldr     x1, =_bss_start
+    ldr     x2, =_bss_end
+1:  cmp     x1, x2
+    b.ge    2f
+    str     xzr, [x1], #8
+    b       1b
+2:
+
+    /* 5. Load the Exception Vector Table */
     ldr     x0, =vectors
     msr     vbar_el1, x0
 
-    /* PHASE 1 PATCH: MMU ENABLE SEQUENCE BYPASSED */
-    /*
-    bl      mmu_init_tables
-    mrs     x0, sctlr_el1
-    ldr     x1, =(1 << 0) | (1 << 2) | (1 << 12)  
-    orr     x0, x0, x1
-    msr     sctlr_el1, x0
-    isb
-    */
-
-    /* 4. Drop into the C kernel */
+    /* 6. Drop into the C kernel */
     bl      kernel_main
 
 halt:

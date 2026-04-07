@@ -14,12 +14,6 @@ static uint64_t gpu_mmio_base = 0;
 static uint64_t dma_heap_curr = 0x50000000ULL;
 static uint16_t global_desc_idx = 0;
 
-/* --- Active Framebuffer Tracking --- */
-static uint64_t active_fb_phys = 0;
-static uint32_t active_fb_width = 1024;
-static uint32_t active_fb_height = 768;
-static uint32_t active_fb_size = 1024 * 768 * 4;
-
 /* --- DMA Allocator --- */
 uint64_t bump_allocate(uint32_t size, uint32_t align) {
     uint64_t addr = dma_heap_curr;
@@ -34,7 +28,7 @@ uint64_t bump_allocate(uint32_t size, uint32_t align) {
     return addr;
 }
 
-/* --- GPU Command Protocol --- */
+/* --- GPU Command Protocol (QA CACHE-COHERENT FIX) --- */
 uint32_t send_gpu_command(uint64_t request_phys,  uint32_t request_size,
                           uint64_t response_phys, uint32_t response_size) {
 
@@ -77,7 +71,8 @@ uint32_t send_gpu_command(uint64_t request_phys,  uint32_t request_size,
     __asm__ volatile("dsb sy" ::: "memory");
 
     /* Notify device */
-    volatile uint32_t *notify_reg = (volatile uint32_t *)(gpu_mmio_base + VIRTIO_REG_QUEUE_NOTIFY);
+    volatile uint32_t *notify_reg =
+        (volatile uint32_t *)(gpu_mmio_base + VIRTIO_REG_QUEUE_NOTIFY);
     *notify_reg = 0;
 
     /* Poll used->idx with cache invalidation so CPU sees GPU's write */
@@ -102,11 +97,14 @@ void gpu_init(void) {
     uart_print("[GPU] Commencing VirtIO Handshake...\n");
 
     /* Step 1: GET_DISPLAY_INFO */
-    struct virtio_gpu_ctrl_hdr *req_info = (struct virtio_gpu_ctrl_hdr *)bump_allocate(sizeof(*req_info), 8);
-    struct virtio_gpu_resp_display_info *resp_info = (struct virtio_gpu_resp_display_info *)bump_allocate(sizeof(*resp_info), 8);
+    struct virtio_gpu_ctrl_hdr *req_info = 
+        (struct virtio_gpu_ctrl_hdr *)bump_allocate(sizeof(*req_info), 8);
+    struct virtio_gpu_resp_display_info *resp_info = 
+        (struct virtio_gpu_resp_display_info *)bump_allocate(sizeof(*resp_info), 8);
     
     req_info->type = VIRTIO_GPU_CMD_GET_DISPLAY_INFO;
-    resp_type = send_gpu_command((uint64_t)req_info, sizeof(*req_info), (uint64_t)resp_info, sizeof(*resp_info));
+    resp_type = send_gpu_command((uint64_t)req_info, sizeof(*req_info), 
+                                 (uint64_t)resp_info, sizeof(*resp_info));
     if (resp_type != VIRTIO_GPU_RESP_OK_DISPLAY_INFO) {
         uart_print("GPU: GET_DISPLAY_INFO failed: ");
         uart_print_hex(resp_type);
@@ -121,61 +119,67 @@ void gpu_init(void) {
         fb_height = 768;
     }
     
-    uint32_t fb_size = fb_width * fb_height * 4;
-    
-    active_fb_width = fb_width;
-    active_fb_height = fb_height;
-    active_fb_size = fb_size;
-    
+    uint32_t fb_size = fb_width * fb_height * 4; 
     uart_print("[GPU] Display Info OK. Binding Resolution...\n");
 
-    /* Step 2: RESOURCE_CREATE_2D */
+    /* Step 2: RESOURCE_CREATE_2D (40 bytes = 10 words) */
     uint32_t *req_create = (uint32_t *)bump_allocate(40, 8);
     struct virtio_gpu_ctrl_hdr *resp_create = (struct virtio_gpu_ctrl_hdr *)bump_allocate(24, 8);
     
     req_create[ 0 ] = VIRTIO_GPU_CMD_RESOURCE_CREATE_2D;
-    req_create[ 6 ] = 1;                                  
-    req_create[ 7 ] = VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM;   
-    req_create[ 8 ] = fb_width;                           
-    req_create[ 9 ] = fb_height;                          
+    req_create[ 6 ] = 1;                                  /* resource_id */
+    req_create[ 7 ] = VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM;   /* format */
+    req_create[ 8 ] = fb_width;                           /* width */
+    req_create[ 9 ] = fb_height;                          /* height */
     
     resp_type = send_gpu_command((uint64_t)req_create, 40, (uint64_t)resp_create, 24);
-    if (resp_type != VIRTIO_GPU_RESP_OK_NODATA) kpanic("GPU: CREATE failed");
+    if (resp_type != VIRTIO_GPU_RESP_OK_NODATA) {
+        uart_print("GPU: CREATE failed: ");
+        uart_print_hex(resp_type);
+        kpanic("Handshake aborted");
+    }
 
-    /* Step 3: RESOURCE_ATTACH_BACKING */
+    /* Step 3: RESOURCE_ATTACH_BACKING (Flattened) */
     uint64_t fb_phys = bump_allocate(fb_size, 4096); 
-    active_fb_phys = fb_phys;
     
     uint32_t *req_attach = (uint32_t *)bump_allocate(48, 8);
     struct virtio_gpu_ctrl_hdr *resp_attach = (struct virtio_gpu_ctrl_hdr *)bump_allocate(24, 8);
     
     req_attach[ 0 ] = VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
-    req_attach[ 6 ] = 1; 
-    req_attach[ 7 ] = 1; 
-    req_attach[ 8 ] = (uint32_t)(fb_phys & 0xFFFFFFFF); 
-    req_attach[ 9 ] = (uint32_t)(fb_phys >> 32);        
-    req_attach[ 10 ] = fb_size;                         
-    req_attach[ 11 ] = 0;                               
+    req_attach[ 6 ] = 1; /* resource_id */
+    req_attach[ 7 ] = 1; /* nr_entries */
+    req_attach[ 8 ] = (uint32_t)(fb_phys & 0xFFFFFFFF); /* addr low */
+    req_attach[ 9 ] = (uint32_t)(fb_phys >> 32);        /* addr high */
+    req_attach[ 10 ] = fb_size;                         /* length */
+    req_attach[ 11 ] = 0;                               /* padding */
     
     resp_type = send_gpu_command((uint64_t)req_attach, 48, (uint64_t)resp_attach, 24);
-    if (resp_type != VIRTIO_GPU_RESP_OK_NODATA) kpanic("GPU: ATTACH failed");
+    if (resp_type != VIRTIO_GPU_RESP_OK_NODATA) {
+        uart_print("GPU: ATTACH failed: ");
+        uart_print_hex(resp_type);
+        kpanic("Handshake aborted");
+    }
 
     mmu_map_framebuffer(fb_phys, fb_size);
 
-    /* Step 4: SET_SCANOUT */
+    /* Step 4: SET_SCANOUT (48 bytes = 12 words) */
     uint32_t *req_scanout = (uint32_t *)bump_allocate(48, 8);
     struct virtio_gpu_ctrl_hdr *resp_scanout = (struct virtio_gpu_ctrl_hdr *)bump_allocate(24, 8);
     
     req_scanout[ 0 ] = VIRTIO_GPU_CMD_SET_SCANOUT;
-    req_scanout[ 6 ] = 0;         
-    req_scanout[ 7 ] = 0;         
-    req_scanout[ 8 ] = fb_width;  
-    req_scanout[ 9 ] = fb_height; 
-    req_scanout[ 10 ] = 0;        
-    req_scanout[ 11 ] = 1;        
+    req_scanout[ 6 ] = 0;         /* r.x */
+    req_scanout[ 7 ] = 0;         /* r.y */
+    req_scanout[ 8 ] = fb_width;  /* r.width */
+    req_scanout[ 9 ] = fb_height; /* r.height */
+    req_scanout[ 10 ] = 0;        /* scanout_id */
+    req_scanout[ 11 ] = 1;        /* resource_id */
     
     resp_type = send_gpu_command((uint64_t)req_scanout, 48, (uint64_t)resp_scanout, 24);
-    if (resp_type != VIRTIO_GPU_RESP_OK_NODATA) kpanic("GPU: SCANOUT failed");
+    if (resp_type != VIRTIO_GPU_RESP_OK_NODATA) {
+        uart_print("GPU: SCANOUT failed: ");
+        uart_print_hex(resp_type);
+        kpanic("Handshake aborted");
+    }
 
     /* Step 5: Fill framebuffer with Solid Blue (BGRA: 0xFF0000FF) */
     uint32_t *fb_pixels = (uint32_t *)fb_phys;
@@ -194,83 +198,47 @@ void gpu_init(void) {
         __asm__ volatile("dsb sy" ::: "memory");
     }
 
-    /* Step 6: TRANSFER_TO_HOST_2D */
+    /* Step 6: TRANSFER_TO_HOST_2D (56 bytes = 14 words) */
     uint32_t *req_tx = (uint32_t *)bump_allocate(56, 8);
     struct virtio_gpu_ctrl_hdr *resp_tx = (struct virtio_gpu_ctrl_hdr *)bump_allocate(24, 8);
     
     req_tx[ 0 ] = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
-    req_tx[ 6 ] = 0;         
-    req_tx[ 7 ] = 0;         
-    req_tx[ 8 ] = fb_width;  
-    req_tx[ 9 ] = fb_height; 
-    req_tx[ 10 ] = 0;        
-    req_tx[ 11 ] = 0;        
-    req_tx[ 12 ] = 1;        
-    req_tx[ 13 ] = 0;        
+    req_tx[ 6 ] = 0;         /* r.x */
+    req_tx[ 7 ] = 0;         /* r.y */
+    req_tx[ 8 ] = fb_width;  /* r.width */
+    req_tx[ 9 ] = fb_height; /* r.height */
+    req_tx[ 10 ] = 0;        /* offset low */
+    req_tx[ 11 ] = 0;        /* offset high */
+    req_tx[ 12 ] = 1;        /* resource_id */
+    req_tx[ 13 ] = 0;        /* padding */
     
     resp_type = send_gpu_command((uint64_t)req_tx, 56, (uint64_t)resp_tx, 24);
-    if (resp_type != VIRTIO_GPU_RESP_OK_NODATA) kpanic("GPU: TRANSFER failed");
+    if (resp_type != VIRTIO_GPU_RESP_OK_NODATA) {
+        uart_print("GPU: TRANSFER failed: ");
+        uart_print_hex(resp_type);
+        kpanic("Handshake aborted");
+    }
 
-    /* Step 7: RESOURCE_FLUSH */
+    /* Step 7: RESOURCE_FLUSH (48 bytes = 12 words) */
     uint32_t *req_flush = (uint32_t *)bump_allocate(48, 8);
     struct virtio_gpu_ctrl_hdr *resp_flush = (struct virtio_gpu_ctrl_hdr *)bump_allocate(24, 8);
     
     req_flush[ 0 ] = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
-    req_flush[ 6 ] = 0;         
-    req_flush[ 7 ] = 0;         
-    req_flush[ 8 ] = fb_width;  
-    req_flush[ 9 ] = fb_height; 
-    req_flush[ 10 ] = 1;        
-    req_flush[ 11 ] = 0;        
+    req_flush[ 6 ] = 0;         /* r.x */
+    req_flush[ 7 ] = 0;         /* r.y */
+    req_flush[ 8 ] = fb_width;  /* r.width */
+    req_flush[ 9 ] = fb_height; /* r.height */
+    req_flush[ 10 ] = 1;        /* resource_id */
+    req_flush[ 11 ] = 0;        /* padding */
     
     resp_type = send_gpu_command((uint64_t)req_flush, 48, (uint64_t)resp_flush, 24);
-    if (resp_type != VIRTIO_GPU_RESP_OK_NODATA) kpanic("GPU: FLUSH failed");
+    if (resp_type != VIRTIO_GPU_RESP_OK_NODATA) {
+        uart_print("GPU: FLUSH failed: ");
+        uart_print_hex(resp_type);
+        kpanic("Handshake aborted");
+    }
 
     uart_print("[GPU] Handshake Complete! Screen should be active.\n");
-}
-
-/* --- Syscall Handler Support --- */
-void virtio_gpu_flush(void) {
-    if (!gpu_mmio_base || !active_fb_phys) return;
-
-    /* 1. Flush the physical framebuffer so the GPU gets the pixels drawn by the shell */
-    uint64_t addr = active_fb_phys & ~63ULL;
-    uint64_t end  = active_fb_phys + active_fb_size;
-    while (addr < end) {
-        __asm__ volatile("dc cvac, %0" :: "r"(addr) : "memory");
-        addr += 64;
-    }
-    __asm__ volatile("dsb sy" ::: "memory");
-
-    /* 2. TRANSFER_TO_HOST_2D */
-    uint32_t *req_tx = (uint32_t *)bump_allocate(56, 8);
-    struct virtio_gpu_ctrl_hdr *resp_tx = (struct virtio_gpu_ctrl_hdr *)bump_allocate(24, 8);
-
-    req_tx[ 0 ] = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
-    req_tx[ 6 ] = 0;
-    req_tx[ 7 ] = 0;
-    req_tx[ 8 ] = active_fb_width;
-    req_tx[ 9 ] = active_fb_height;
-    req_tx[ 10 ] = 0;
-    req_tx[ 11 ] = 0;
-    req_tx[ 12 ] = 1;
-    req_tx[ 13 ] = 0;
-
-    send_gpu_command((uint64_t)req_tx, 56, (uint64_t)resp_tx, 24);
-
-    /* 3. RESOURCE_FLUSH */
-    uint32_t *req_flush = (uint32_t *)bump_allocate(48, 8);
-    struct virtio_gpu_ctrl_hdr *resp_flush = (struct virtio_gpu_ctrl_hdr *)bump_allocate(24, 8);
-
-    req_flush[ 0 ] = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
-    req_flush[ 6 ] = 0;
-    req_flush[ 7 ] = 0;
-    req_flush[ 8 ] = active_fb_width;
-    req_flush[ 9 ] = active_fb_height;
-    req_flush[ 10 ] = 1;
-    req_flush[ 11 ] = 0;
-
-    send_gpu_command((uint64_t)req_flush, 48, (uint64_t)resp_flush, 24);
 }
 
 /* --- Hardware Probing & Virtqueue Setup --- */
@@ -319,7 +287,10 @@ void virtio_probe_and_init(void) {
                     *guest_page_size = 4096;
                     *q_sel = 0;
                     
-                    if (*q_num_max < VIRTQ_SIZE) kpanic("GPU: queue too small for VIRTQ_SIZE\n");
+                    /* WARNING-07 FIX: Validate MAX queue size */
+                    if (*q_num_max < VIRTQ_SIZE) {
+                        kpanic("GPU: queue too small for VIRTQ_SIZE\n");
+                    }
                     *q_num = VIRTQ_SIZE;
                     
                     *q_align = 4096;
@@ -344,12 +315,21 @@ void virtio_probe_and_init(void) {
                     *drv_feat_sel = 1; *drv_feat = 1; 
                     *status = VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK;
 
-                    if (!(*status & VIRTIO_STATUS_FEATURES_OK)) kpanic("GPU: device rejected feature negotiation\n");
+                    /* WARNING-08 FIX: Read-back FEATURES_OK to ensure device acceptance */
+                    if (!(*status & VIRTIO_STATUS_FEATURES_OK)) {
+                        kpanic("GPU: device rejected feature negotiation\n");
+                    }
 
                     *q_sel = 0;
-                    if (*q_num_max < VIRTQ_SIZE) kpanic("GPU: queue too small for VIRTQ_SIZE\n");
+                    
+                    /* WARNING-07 FIX: Validate MAX queue size */
+                    if (*q_num_max < VIRTQ_SIZE) {
+                        kpanic("GPU: queue too small for VIRTQ_SIZE\n");
+                    }
                     *q_num = VIRTQ_SIZE;
 
+                    /* BLOCKER-33 FIX: Identity-mapped VA == PA. If non-identity mapping 
+                       is ever introduced, recalculate physical addresses here. */
                     uint64_t desc_phys  = (uint64_t)gpu_desc;   
                     uint64_t avail_phys = (uint64_t)gpu_avail;
                     uint64_t used_phys  = (uint64_t)gpu_used;
@@ -374,16 +354,13 @@ void virtio_probe_and_init(void) {
     uart_print("[KERNEL] VirtIO probe complete\n");
 }
 
-/* ========================================================================
- * VIRTIO STUBS 
+* ========================================================================
+ * VIRTIO BLOCK DRIVER (RESTORED STUB)
  * ======================================================================== */
 
+/* Restored to satisfy linker dependencies in syscall.c */
 void virtio_blk_read_sector(uint64_t sector, void *buffer) {
     (void)sector;
     (void)buffer;
     uart_print("[ VIRTIO ] Warning: Block read called (currently stubbed).\n");
-}
-
-void virtio_input_poll(void) {
-    /* Stubbed for Phase 5 IPC wiring */
 }

@@ -11,14 +11,14 @@ SECTIONS
 
     .text : {
         KEEP(*(.text.boot))
-        
+
         . = ALIGN(2048);
         _vectors = .;
         KEEP(*(.text.vectors))
-        
+
         *(.text*)
     } > RAM
-    
+
     . = ALIGN(4096);
     _etext = .;
 
@@ -31,14 +31,12 @@ SECTIONS
 
     .bss : {
         . = ALIGN(4096);
+        . = ALIGN(16);
         _bss_start = .;
         *(.bss*)
         *(COMMON)
-        
-        /* CLEANED: Removed legacy Smartcard OS hardcoded table allocations 
-           which were fighting with our mmu.c static arrays! */
-        
         . = ALIGN(4096);
+        . = ALIGN(16);
         _bss_end = .;
     } > RAM
 
@@ -48,11 +46,16 @@ SECTIONS
     _stack_top = .;
 
     /* --- EL0 USER SPACE REGION --- */
-    
-    /* EL0 MODULE CODE */
+
+    /* Force the entire EL0 region into its own 2MB block */
+    . = ALIGN(0x200000); 
+    _el0_region_start = .;
+
     .el0_text : ALIGN(4096) {
         _el0_text_start = .;
-        KEEP(*(.el0_user_text))
+        KEEP(*(.el0_entry))
+        *(.el0_user_text)
+        *(.el0_user_rodata)
         . = ALIGN(4096);
         _el0_text_end = .;
     } > RAM
@@ -66,4 +69,8 @@ SECTIONS
     _el0_stack_bottom = .;
     . += 0x4000;
     _el0_stack_top = .;
+
+    /* Mark the end of the region to guarantee the MMU grants stack permissions */
+    . = ALIGN(0x200000);
+    _el0_region_end = .;
 }

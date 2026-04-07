@@ -10,3 +10,16 @@ void uart_putc(char c) {
 void uart_print(const char *str) {
     while (*str) uart_putc(*str++);
 }
+
+/* New: Hexadecimal formatter for dumping memory addresses and registers */
+void uart_print_hex(uint64_t val) {
+    uart_print("0x");
+    for (int i = 60; i >= 0; i -= 4) {
+        uint8_t nibble = (val >> i) & 0xF;
+        if (nibble < 10) {
+            uart_putc('0' + nibble);
+        } else {
+            uart_putc('A' + (nibble - 10));
+        }
+    }
+}

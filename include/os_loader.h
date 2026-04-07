@@ -18,17 +18,17 @@ typedef struct {
 typedef struct {
     uint32_t magic;
     uint32_t cartridge_count;
-    bundle_index_t index[ 8 ];        /* DEFECT-02 FIX: Array of 8 */
+    bundle_index_t index[ 8 ];
 } bundle_header_t;
 
 typedef struct {
     uint32_t magic;
     uint32_t module_id;
     uint32_t code_size;
-    uint32_t text_size;    /* Perfectly placed */
+    uint32_t text_size;
     uint32_t bss_size;
     uint32_t stack_size;
-    uint8_t  signature[ 64 ]; /* THE FIX: Array of 64 bytes! */
+    uint8_t  signature[ 64 ];
 } cartridge_header_t;
 
 typedef struct {
@@ -39,10 +39,11 @@ typedef struct {
     uint64_t stack_size;
 } module_region_t;
 
-extern module_region_t module_regions[ 8 ];  /* DEFECT-01 FIX: Array of 8 */
+extern module_region_t module_regions[ 8 ];
 extern uint32_t loaded_module_count;
 
-module_region_t* get_region_for_current_module(void);
+/* FIX: Return type changed from module_region_t* to int to match loader.c and syscall.c */
+int  get_region_for_current_module(void);
 void loader_init(void);
 
 #endif

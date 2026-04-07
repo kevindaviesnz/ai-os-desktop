@@ -1,38 +1,33 @@
 CC = aarch64-elf-gcc
 LD = aarch64-elf-ld
-OBJCOPY = aarch64-elf-objcopy
+CFLAGS = -ffreestanding -mcpu=cortex-a53 -mgeneral-regs-only -O2 -Wall -Wextra -Iinclude
 
-CFLAGS = -ffreestanding -mcpu=cortex-a53 -O2 -Wall -Wextra -Iinclude
-LDFLAGS = -T linker.ld -nostdlib
+OBJS = kernel/boot.o kernel/vectors.o kernel/main.o kernel/mmu.o \
+       kernel/uart.o kernel/gic.o kernel/loader.o kernel/syscall.o \
+       kernel/virtio.o modules/shell_gui/main.o
 
-KERNEL_SRC = kernel/boot.S kernel/vectors.S kernel/main.c kernel/mmu.c kernel/uart.c kernel/gic.c kernel/loader.c kernel/syscall.c kernel/virtio.c
-KERNEL_OBJ = $(KERNEL_SRC:.c=.o)
-KERNEL_OBJ := $(KERNEL_OBJ:.S=.o)
+all: build/os_desktop.elf
 
-all: build/os_desktop.elf 
-
-build/os_desktop.elf: $(KERNEL_OBJ)
+build/os_desktop.elf: $(OBJS)
 	mkdir -p build
-	$(LD) $(LDFLAGS) -o $@ $^
-
-%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(LD) -T linker.ld -nostdlib -o $@ $(OBJS)
 
 %.o: %.S
 	$(CC) $(CFLAGS) -c $< -o $@
 
-run: all
-	@echo "[*] Launching ai-os-desktop in QEMU..."
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -rf build kernel/*.o modules/shell_gui/*.o
+
+run: build/os_desktop.elf
 	qemu-system-aarch64 \
 		-M virt,gic-version=2 \
 		-cpu cortex-a53 \
 		-m 1024M \
 		-display cocoa \
 		-device virtio-gpu-device \
-		-device virtio-mouse-device \
 		-device virtio-keyboard-device \
-		-serial tcp:127.0.0.1:4444,server,wait \
-		-kernel build/os_desktop.elf 
-
-clean:
-	rm -rf build kernel/*.o
+		-serial stdio \
+		-kernel build/os_desktop.elf
