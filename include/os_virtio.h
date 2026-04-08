@@ -13,6 +13,13 @@
 #define VIRTIO_DEV_INPUT 18
 #define VIRTIO_DEV_GPU   16
 
+/* Block Request Types */
+#define VIRTIO_BLK_T_IN          0
+#define VIRTIO_BLK_T_OUT         1
+
+/* Block Status */
+#define VIRTIO_BLK_S_OK          0
+
 #define VIRTQ_SIZE 256
 
 #define VIRTIO_REG_MAGICVALUE     0x000
@@ -171,5 +178,8 @@ struct virtio_gpu_resource_attach_backing {
 void virtio_probe_and_init(void);
 char virtio_input_poll(void);
 void virtio_gpu_flush(void);
+
+int virtio_blk_read_sector(uint64_t sector, void *buffer);
+int virtio_blk_write_sector(uint64_t sector, const void *buffer);
 
 #endif

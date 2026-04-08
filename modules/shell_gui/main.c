@@ -124,11 +124,13 @@ ATTR_EL0_RO static const char msg_prompt[] = "kevindavies@ai-os / % ";
 ATTR_EL0_RO static const char cmd_help[]  = "help";
 ATTR_EL0_RO static const char cmd_clear[] = "clear";
 ATTR_EL0_RO static const char cmd_echo[]  = "echo ";
+ATTR_EL0_RO static const char cmd_ls[]    = "ls";
 
 ATTR_EL0_RO static const char msg_help_1[] = "Available commands:\n";
 ATTR_EL0_RO static const char msg_help_2[] = "  help  - Show this message\n";
 ATTR_EL0_RO static const char msg_help_3[] = "  clear - Clear the terminal screen\n";
 ATTR_EL0_RO static const char msg_help_4[] = "  echo  - Print text to the screen\n";
+ATTR_EL0_RO static const char msg_help_5[] = "  ls    - List directory contents\n";
 ATTR_EL0_RO static const char msg_unknown[] = "Unknown command: ";
 
 /* --- Bare-Metal String Utilities --- */
@@ -151,6 +153,12 @@ ATTR_EL0 static int shell_strncmp(const char *s1, const char *s2, uint32_t n) {
 }
 
 /* --- System Calls --- */
+ATTR_EL0 void sys_ipc_send(os_message_t *msg) {
+    register uint64_t x0 __asm__("x0") = (uint64_t)msg;
+    register uint64_t x8 __asm__("x8") = SYS_IPC_SEND;
+    __asm__ volatile("svc 0" : "+r"(x0) : "r"(x8) : "memory");
+}
+
 ATTR_EL0 void ipc_receive(os_message_t *msg) {
     register uint64_t x0 __asm__("x0") = (uint64_t)msg;
     register uint64_t x8 __asm__("x8") = SYS_IPC_RECV;
@@ -282,6 +290,7 @@ ATTR_EL0_ENTRY int shell_main(void) {
                         term_print(&ctx, msg_help_2);
                         term_print(&ctx, msg_help_3);
                         term_print(&ctx, msg_help_4);
+                        term_print(&ctx, msg_help_5);
                     } 
                     else if (shell_strcmp(cmd_buffer, cmd_clear) == 0) {
                         term_clear_screen(&ctx);
@@ -289,7 +298,28 @@ ATTR_EL0_ENTRY int shell_main(void) {
                     else if (shell_strncmp(cmd_buffer, cmd_echo, 5) == 0) {
                         term_print(&ctx, cmd_buffer + 5);
                         term_putc(&ctx, '\n');
-                    } 
+                    }
+                    else if (shell_strcmp(cmd_buffer, cmd_ls) == 0) {
+                        os_message_t req;
+                        req.sender_id = SYS_MOD_GUI_SHELL;
+                        req.target_id = SYS_MOD_KERNEL;
+                        req.type = IPC_MSG_FS_LIST_REQ;
+                        req.length = 0;
+                        sys_ipc_send(&req);
+
+                        /* Wait for the kernel to read the disk and reply */
+                        int waiting = 1;
+                        while (waiting) {
+                            os_message_t resp;
+                            ipc_receive(&resp);
+                            
+                            /* Only parse File System responses, ignore async keystrokes for now */
+                            if (resp.type == IPC_MSG_FS_LIST_RESP) {
+                                term_print(&ctx, (char *)resp.payload);
+                                waiting = 0;
+                            }
+                        }
+                    }
                     else {
                         term_print(&ctx, msg_unknown);
                         term_print(&ctx, cmd_buffer);

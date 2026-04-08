@@ -38,7 +38,6 @@ const uint8_t capability_matrix[ MODULE_COUNT ][ MODULE_COUNT ] = {
 extern int get_region_for_current_module(void);
 extern int is_valid_el0_pointer(uint64_t ptr, uint64_t size);
 extern void kpanic(const char *msg);
-extern int virtio_blk_read_sector(uint64_t sector, uint8_t *buffer);
 extern void virtio_gpu_flush(void);
 extern char virtio_input_poll(void);
 
@@ -66,6 +65,42 @@ void syscall_handler(uint64_t *sp) {
 
     if (syscall_num == SYS_GPU_FLUSH) {
         virtio_gpu_flush();
+    }
+    else if (syscall_num == SYS_IPC_SEND) {
+        os_message_t *in_msg = (os_message_t *)arg0;
+        
+        /* If the shell is talking to the kernel... */
+        if (in_msg->target_id == SYS_MOD_KERNEL) {
+            
+            /* And it's asking for a directory list ('ls') */
+            if (in_msg->type == IPC_MSG_FS_LIST_REQ) {
+                
+                char dir_buf[ 256 ]; 
+                
+                extern void fs_get_dir_list(char *buffer, uint32_t max_len);
+                fs_get_dir_list(dir_buf, 256);
+
+                /* Create the response message */
+                os_message_t out_msg;
+                out_msg.sender_id = SYS_MOD_KERNEL;
+                out_msg.target_id = in_msg->sender_id;
+                out_msg.type = IPC_MSG_FS_LIST_RESP;
+                
+                /* Copy the string into the payload */
+                uint32_t len = 0;
+                while (dir_buf[ len ] != '\0' && len < 255) {
+                    out_msg.payload[ len ] = dir_buf[ len ];
+                    len++;
+                }
+                out_msg.payload[ len ] = '\0';
+                out_msg.length = len + 1;
+                
+                ipc_kernel_send(&out_msg);
+            }
+        } else {
+            /* If it's for another module, just put it in the queue */
+            ipc_kernel_send(in_msg);
+        }
     }
     else if (syscall_num == SYS_IPC_RECV) {
         /* DEFERRED-12: Bounds checking stubbed */

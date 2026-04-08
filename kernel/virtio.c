@@ -5,6 +5,9 @@ extern void mmu_map_framebuffer(uint64_t phys_addr, uint64_t size);
 extern void kpanic(const char *msg);
 extern void uart_print_hex(uint32_t val);
 
+/* Add this forward declaration: */
+static uint64_t setup_virtqueue(uint64_t base, uint32_t version, volatile struct virtq_desc **desc, volatile struct virtq_avail **avail, volatile struct virtq_used **used);
+
 /* --- Global GPU Pointers --- */
 static volatile struct virtq_desc *gpu_desc;
 static volatile struct virtq_avail *gpu_avail;
@@ -27,6 +30,13 @@ static volatile struct virtq_avail *in_avail;
 static volatile struct virtq_used *in_used;
 static uint16_t in_last_used_idx = 0;
 static struct virtio_input_event *in_events;
+
+/* --- Global Block Pointers --- */
+static uint64_t blk_mmio_base = 0;
+static volatile struct virtq_desc *blk_desc;
+static volatile struct virtq_avail *blk_avail;
+static volatile struct virtq_used *blk_used;
+static uint16_t blk_last_used_idx = 0;
 
 /* --- Keyboard State --- */
 static uint8_t shift_active = 0;
@@ -208,6 +218,20 @@ void gpu_init(void) {
     uart_print("[GPU] Handshake Complete! Screen should be active.\n");
 }
 
+/* --- Block Device Handshake --- */
+void virtio_blk_init(uint64_t base, uint32_t version) {
+    uart_print("[KERNEL] VirtIO Block found. Initializing...\n");
+    blk_mmio_base = base;
+    
+    volatile uint32_t *status = (volatile uint32_t *)(base + VIRTIO_REG_STATUS);
+    *status = 0; /* Reset */
+    *status = VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER;
+    
+    setup_virtqueue(base, version, &blk_desc, &blk_avail, &blk_used);
+    
+    *status |= VIRTIO_STATUS_DRIVER_OK;
+}
+
 /* --- Setup Helper for VirtQueues --- */
 static uint64_t setup_virtqueue(uint64_t base, uint32_t version, volatile struct virtq_desc **desc, volatile struct virtq_avail **avail, volatile struct virtq_used **used) {
     uint32_t desc_size  = 16 * VIRTQ_SIZE;
@@ -321,6 +345,9 @@ void virtio_probe_and_init(void) {
                 *status |= VIRTIO_STATUS_DRIVER_OK;
                 gpu_init();
             }
+            else if (*devid == VIRTIO_DEV_BLK) {
+                virtio_blk_init(base, *version);
+            }
         }
     }
     uart_print("[KERNEL] VirtIO probe complete\n");
@@ -366,7 +393,7 @@ char virtio_input_poll(void) {
         /* Give the buffer back to QEMU so it can capture the next keystroke */
         uint16_t avail_idx = in_avail->idx;
         in_avail->ring[ avail_idx % VIRTQ_SIZE ] = desc_idx;
-        cache_flush((uint64_t)&in_avail->ring[ avail_idx % VIRTQ_SIZE ], 2);
+        cache_flush((uint64_t)in_avail->ring[ avail_idx % VIRTQ_SIZE ], 2);
         
         in_avail->idx = avail_idx + 1;
         cache_flush((uint64_t)&in_avail->idx, 2);
@@ -403,7 +430,115 @@ void virtio_gpu_flush(void) {
     send_gpu_command((uint64_t)req_flush, 48, (uint64_t)resp_flush, 24);
 }
 
-void virtio_blk_read_sector(uint64_t sector, void *buffer) {
-    (void)sector; (void)buffer;
-    uart_print("[ VIRTIO ] Warning: Block read called (currently stubbed).\n");
+int virtio_blk_read_sector(uint64_t sector, void *buffer) {
+    if (!blk_mmio_base) return -1;
+
+    /* Descriptor chain: [Header] -> [Data Buffer] -> [Status Byte] */
+    struct virtio_blk_req *req = (struct virtio_blk_req *)bump_allocate(sizeof(struct virtio_blk_req), 16);
+    req->type = VIRTIO_BLK_T_IN;
+    req->sector = sector;
+
+    volatile uint8_t *status_ptr = (volatile uint8_t *)bump_allocate(1, 1);
+    *status_ptr = 0xFF;
+
+    uint16_t d0 = global_desc_idx++ % VIRTQ_SIZE;
+    uint16_t d1 = global_desc_idx++ % VIRTQ_SIZE;
+    uint16_t d2 = global_desc_idx++ % VIRTQ_SIZE;
+
+    blk_desc[ d0 ].addr  = (uint64_t)req;
+    blk_desc[ d0 ].len   = sizeof(struct virtio_blk_req);
+    blk_desc[ d0 ].flags = VIRTQ_DESC_F_NEXT;
+    blk_desc[ d0 ].next  = d1;
+
+    blk_desc[ d1 ].addr  = (uint64_t)buffer;
+    blk_desc[ d1 ].len   = 512;
+    blk_desc[ d1 ].flags = VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE;
+    blk_desc[ d1 ].next  = d2;
+
+    blk_desc[ d2 ].addr  = (uint64_t)status_ptr;
+    blk_desc[ d2 ].len   = 1;
+    blk_desc[ d2 ].flags = VIRTQ_DESC_F_WRITE;
+    blk_desc[ d2 ].next  = 0;
+
+    uint16_t avail_idx = blk_avail->idx;
+    blk_avail->ring[ avail_idx % VIRTQ_SIZE ] = d0;
+
+    cache_flush((uint64_t)req, sizeof(*req));
+    cache_flush((uint64_t)&blk_desc[ d0 ], sizeof(struct virtq_desc) * 3);
+    
+    blk_avail->idx = avail_idx + 1;
+    cache_flush((uint64_t)&blk_avail->idx, 2);
+
+    volatile uint32_t *notify_reg = (volatile uint32_t *)(blk_mmio_base + VIRTIO_REG_QUEUE_NOTIFY);
+    *notify_reg = 0;
+
+    while (blk_used->idx == blk_last_used_idx) {
+        cache_invalidate((uint64_t)&blk_used->idx, 2);
+    }
+    blk_last_used_idx++;
+
+    cache_invalidate((uint64_t)buffer, 512);
+    cache_invalidate((uint64_t)status_ptr, 1);
+
+    return (*status_ptr == VIRTIO_BLK_S_OK) ? 0 : -1;
+}
+
+int virtio_blk_write_sector(uint64_t sector, const void *buffer) {
+    if (!blk_mmio_base) return -1;
+
+    /* Descriptor chain: [Header] -> [Data Buffer] -> [Status Byte] */
+    struct virtio_blk_req *req = (struct virtio_blk_req *)bump_allocate(sizeof(struct virtio_blk_req), 16);
+    req->type = VIRTIO_BLK_T_OUT; /* 1 = Write */
+    req->sector = sector;
+
+    volatile uint8_t *status_ptr = (volatile uint8_t *)bump_allocate(1, 1);
+    *status_ptr = 0xFF;
+
+    uint16_t d0 = global_desc_idx++ % VIRTQ_SIZE;
+    uint16_t d1 = global_desc_idx++ % VIRTQ_SIZE;
+    uint16_t d2 = global_desc_idx++ % VIRTQ_SIZE;
+
+    /* Desc 0: Header (Device reads this) */
+    blk_desc[ d0 ].addr  = (uint64_t)req;
+    blk_desc[ d0 ].len   = sizeof(struct virtio_blk_req);
+    blk_desc[ d0 ].flags = VIRTQ_DESC_F_NEXT;
+    blk_desc[ d0 ].next  = d1;
+
+    /* Desc 1: Data Buffer (Device READS from our RAM, so NO F_WRITE flag) */
+    blk_desc[ d1 ].addr  = (uint64_t)buffer;
+    blk_desc[ d1 ].len   = 512;
+    blk_desc[ d1 ].flags = VIRTQ_DESC_F_NEXT; 
+    blk_desc[ d1 ].next  = d2;
+
+    /* Desc 2: Status Byte (Device writes the result here) */
+    blk_desc[ d2 ].addr  = (uint64_t)status_ptr;
+    blk_desc[ d2 ].len   = 1;
+    blk_desc[ d2 ].flags = VIRTQ_DESC_F_WRITE;
+    blk_desc[ d2 ].next  = 0;
+
+    uint16_t avail_idx = blk_avail->idx;
+    blk_avail->ring[ avail_idx % VIRTQ_SIZE ] = d0;
+
+    /* Flush our request AND the data buffer to RAM so QEMU's DMA can see it */
+    cache_flush((uint64_t)req, sizeof(*req));
+    cache_flush((uint64_t)buffer, 512); 
+    cache_flush((uint64_t)&blk_desc[ d0 ], sizeof(struct virtq_desc) * 3);
+    
+    blk_avail->idx = avail_idx + 1;
+    cache_flush((uint64_t)&blk_avail->idx, 2);
+
+    /* Ring the doorbell */
+    volatile uint32_t *notify_reg = (volatile uint32_t *)(blk_mmio_base + VIRTIO_REG_QUEUE_NOTIFY);
+    *notify_reg = 0;
+
+    /* Wait for completion */
+    while (blk_used->idx == blk_last_used_idx) {
+        cache_invalidate((uint64_t)&blk_used->idx, 2);
+    }
+    blk_last_used_idx++;
+
+    /* Invalidate the status byte to see if it succeeded */
+    cache_invalidate((uint64_t)status_ptr, 1);
+
+    return (*status_ptr == VIRTIO_BLK_S_OK) ? 0 : -1;
 }

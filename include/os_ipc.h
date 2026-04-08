@@ -24,7 +24,8 @@
 #endif
 STATIC_ASSERT(SYS_MOD_GUI_SHELL < MODULE_COUNT, gui_shell_id_bounds);
 
-#define IPC_PAYLOAD_MAX_SIZE 32
+/* Upgraded payload size for File System strings */
+#define IPC_PAYLOAD_MAX_SIZE 256
 
 /* Syscalls */
 #define SYS_IPC_SEND       1
@@ -34,9 +35,12 @@ STATIC_ASSERT(SYS_MOD_GUI_SHELL < MODULE_COUNT, gui_shell_id_bounds);
 #define SYS_GPU_FLUSH      8
 
 /* IPC Message Types */
-#define IPC_MSG_KEY_PRESS  1
-#define IPC_MSG_FILE_REQ   2
-#define IPC_MSG_FILE_RESP  3
+#define IPC_MSG_KEY_PRESS    1
+#define IPC_MSG_FILE_REQ     2
+#define IPC_MSG_FILE_RESP    3
+/* File System Request Types */
+#define IPC_MSG_FS_LIST_REQ  4
+#define IPC_MSG_FS_LIST_RESP 5
 
 typedef struct {
     uint32_t sender_id;

@@ -1,6 +1,7 @@
 #include "os_types.h"
 #include "os_virtio.h"
 
+extern void fs_fat32_init(void);
 extern void mmu_init_tables(void);
 extern void virtio_probe_and_init(void);
 extern void uart_print(const char *str);
@@ -9,7 +10,6 @@ extern void uart_print_hex(uint64_t val);
 extern char _el0_text_start[];
 extern char _el0_stack_top[];
 
-/* New: The ultimate crash catcher. Receives hardware registers from vectors.S */
 void fatal_exception_handler(uint64_t id, uint64_t esr, uint64_t elr, uint64_t far) {
     uart_print("\n========================================\n");
     uart_print("[ KERNEL PANIC ] HARDWARE EXCEPTION\n");
@@ -37,13 +37,19 @@ void kernel_main(void) {
     virtio_probe_and_init();
     uart_print("[BOOT] VirtIO Initialization Complete.\n");
 
+    /* --- Phase 6: Mount the FAT32 File System --- */
+    fs_fat32_init();
+    
+    extern void fs_read_test_file(void);
+    //fs_read_test_file();
+    /* -------------------------------------------- */
+
     uart_print("[BOOT] Configuring EL0 User Space Drop...\n");
     uart_print("       -> EL0 Entry : "); uart_print_hex((uint64_t)_el0_text_start); uart_print("\n");
     uart_print("       -> EL0 Stack : "); uart_print_hex((uint64_t)_el0_stack_top); uart_print("\n");
     uart_print("[BOOT] Executing ERET to user space...\n");
 
     __asm__ volatile(
-        /* SPSR_EL1 = 0: drop to EL0t, all interrupts unmasked */
         "msr spsr_el1, xzr\n\t"
         "ldr x0, =_el0_text_start\n\t"
         "msr elr_el1, x0\n\t"
@@ -58,4 +64,14 @@ void kernel_main(void) {
     while (1) {
         __asm__ volatile("wfi");
     }
+}
+
+/* Custom bare-metal memory copy implementation */
+void *memcpy(void *dest, const void *src, uint32_t n) {
+    uint8_t *d = (uint8_t *)dest;
+    const uint8_t *s = (const uint8_t *)src;
+    for (uint32_t i = 0; i < n; i++) {
+        d[ i ] = s[ i ];
+    }
+    return dest;
 }
