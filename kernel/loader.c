@@ -33,12 +33,14 @@ int ipc_send(uint32_t sender_id, const os_message_t *msg) {
     return IPC_SUCCESS;
 }
 
+/*
 void ipc_kernel_send(uint32_t target_id, uint32_t type, uint8_t *payload, uint32_t length) {
     (void)target_id;
     (void)type;
     (void)payload;
     (void)length;
 }
+    */
 
 void kpanic(const char *msg) {
     uart_print("\n[ KERNEL PANIC ] ");

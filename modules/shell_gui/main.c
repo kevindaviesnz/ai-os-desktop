@@ -7,6 +7,7 @@
 
 #define COLOR_BG 0xFF1E1E1E
 #define COLOR_FG 0xFF00FF00
+#define CMD_MAX_LEN 256
 
 typedef struct {
     uint32_t *framebuffer;
@@ -114,11 +115,42 @@ ATTR_EL0_RO static const uint8_t font8x8[ 95 ][ 8 ] = {
     {0x76,0xDC,0x00,0x00,0x00,0x00,0x00,0x00}  /* ~ */
 };
 
+/* Explicitly locate all command strings in EL0 memory */
 ATTR_EL0_RO static const char msg_init[]   = "ai-os-desktop terminal subsystem initialized.\n";
 ATTR_EL0_RO static const char msg_fb[]     = "Framebuffer rendering active.\n";
-ATTR_EL0_RO static const char msg_wait[]   = "Waiting for VirtIO input...\n\n";
+ATTR_EL0_RO static const char msg_wait[]   = "IPC Mailbox Online. Ready for commands.\n\n";
 ATTR_EL0_RO static const char msg_prompt[] = "kevindavies@ai-os / % ";
 
+ATTR_EL0_RO static const char cmd_help[]  = "help";
+ATTR_EL0_RO static const char cmd_clear[] = "clear";
+ATTR_EL0_RO static const char cmd_echo[]  = "echo ";
+
+ATTR_EL0_RO static const char msg_help_1[] = "Available commands:\n";
+ATTR_EL0_RO static const char msg_help_2[] = "  help  - Show this message\n";
+ATTR_EL0_RO static const char msg_help_3[] = "  clear - Clear the terminal screen\n";
+ATTR_EL0_RO static const char msg_help_4[] = "  echo  - Print text to the screen\n";
+ATTR_EL0_RO static const char msg_unknown[] = "Unknown command: ";
+
+/* --- Bare-Metal String Utilities --- */
+ATTR_EL0 static int shell_strcmp(const char *s1, const char *s2) {
+    while (*s1 && (*s1 == *s2)) {
+        s1++;
+        s2++;
+    }
+    return *(const unsigned char *)s1 - *(const unsigned char *)s2;
+}
+
+ATTR_EL0 static int shell_strncmp(const char *s1, const char *s2, uint32_t n) {
+    while (n && *s1 && (*s1 == *s2)) {
+        s1++;
+        s2++;
+        n--;
+    }
+    if (n == 0) return 0;
+    return *(const unsigned char *)s1 - *(const unsigned char *)s2;
+}
+
+/* --- System Calls --- */
 ATTR_EL0 void ipc_receive(os_message_t *msg) {
     register uint64_t x0 __asm__("x0") = (uint64_t)msg;
     register uint64_t x8 __asm__("x8") = SYS_IPC_RECV;
@@ -130,6 +162,7 @@ ATTR_EL0 void sys_gpu_flush(void) {
     __asm__ volatile("svc 0" : : "r"(x8) : "memory");
 }
 
+/* --- Rendering Functions --- */
 ATTR_EL0 void term_clear_screen(term_ctx_t *ctx) {
     for (uint32_t i = 0; i < ctx->screen_width * ctx->screen_height; i++) {
         ctx->framebuffer[ i ] = COLOR_BG;
@@ -210,11 +243,12 @@ ATTR_EL0 void term_print(term_ctx_t *ctx, const char *str) {
     }
 }
 
+/* --- Main Shell Execution --- */
 ATTR_EL0_ENTRY int shell_main(void) {
     term_ctx_t ctx;
     ctx.framebuffer   = (uint32_t *)0x20000000;
-    ctx.screen_width  = 1280;  /* <-- Match QEMU's native width  */
-    ctx.screen_height = 800;   /* <-- Match QEMU's native height */
+    ctx.screen_width  = 1280;
+    ctx.screen_height = 800;
     ctx.cursor_x      = 0;
     ctx.cursor_y      = 0;
 
@@ -226,16 +260,58 @@ ATTR_EL0_ENTRY int shell_main(void) {
 
     sys_gpu_flush();
 
+    /* Command Buffer State */
+    char cmd_buffer[ CMD_MAX_LEN ];
+    uint32_t cmd_idx = 0;
+
     while (1) {
         os_message_t msg;
         ipc_receive(&msg);
 
         if (msg.type == IPC_MSG_KEY_PRESS && msg.length > 0) {
-            char ascii_char = (char)msg.payload[ 0 ];
-            term_putc(&ctx, ascii_char);
+            char c = (char)msg.payload[ 0 ];
 
-            if (ascii_char == '\n') {
+            if (c == '\n') {
+                term_putc(&ctx, c);
+                cmd_buffer[ cmd_idx ] = '\0'; /* Null-terminate the string */
+
+                /* Command Execution Logic */
+                if (cmd_idx > 0) {
+                    if (shell_strcmp(cmd_buffer, cmd_help) == 0) {
+                        term_print(&ctx, msg_help_1);
+                        term_print(&ctx, msg_help_2);
+                        term_print(&ctx, msg_help_3);
+                        term_print(&ctx, msg_help_4);
+                    } 
+                    else if (shell_strcmp(cmd_buffer, cmd_clear) == 0) {
+                        term_clear_screen(&ctx);
+                    } 
+                    else if (shell_strncmp(cmd_buffer, cmd_echo, 5) == 0) {
+                        term_print(&ctx, cmd_buffer + 5);
+                        term_putc(&ctx, '\n');
+                    } 
+                    else {
+                        term_print(&ctx, msg_unknown);
+                        term_print(&ctx, cmd_buffer);
+                        term_putc(&ctx, '\n');
+                    }
+                }
+
+                cmd_idx = 0; /* Reset buffer for the next command */
                 term_print(&ctx, msg_prompt);
+            } 
+            else if (c == '\b') {
+                if (cmd_idx > 0) {
+                    cmd_idx--;
+                    term_putc(&ctx, c); /* term_putc handles the visual backspace erasure */
+                }
+            } 
+            else {
+                /* Add printable character to buffer if space allows */
+                if (cmd_idx < CMD_MAX_LEN - 1) {
+                    cmd_buffer[ cmd_idx++ ] = c;
+                    term_putc(&ctx, c);
+                }
             }
 
             sys_gpu_flush();
