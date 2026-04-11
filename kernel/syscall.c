@@ -1,6 +1,7 @@
 #include "os_ipc.h"
 #include "os_types.h"
 #include "os_virtio.h"
+#include "os_watcher.h"
 
 #define REG_X0 0
 #define REG_X1 1
@@ -53,7 +54,7 @@ void syscall_handler(uint64_t *sp) {
     uint64_t syscall_num = sp[ 8 ];
     uint64_t arg0        = sp[ 0 ];
 
-    /* [QA REVERT]: Hardware must be drained on EVERY syscall to prevent input deadlocks */
+    /* Hardware must be drained on EVERY syscall to prevent input deadlocks */
     drain_hardware_queues();
 
     if (syscall_num == SYS_GPU_FLUSH) {
@@ -65,6 +66,9 @@ void syscall_handler(uint64_t *sp) {
         if (in_msg->target_id == SYS_MOD_KERNEL) {
 
             if (in_msg->type == IPC_MSG_FS_LIST_REQ) {
+                /* --- WATCHER LOGGING --- */
+                watcher_log_event(EVENT_TYPE_FS_READ, in_msg->sender_id, "ROOT_DIR");
+                
                 char dir_buf[ 256 ];
                 extern void fs_get_dir_list(char *buffer, uint32_t max_len);
                 fs_get_dir_list(dir_buf, 256);
@@ -84,6 +88,9 @@ void syscall_handler(uint64_t *sp) {
                 ipc_kernel_send(&out_msg);
             }
             else if (in_msg->type == IPC_MSG_FS_READ_REQ) {
+                /* --- WATCHER LOGGING --- */
+                watcher_log_event(EVENT_TYPE_FS_READ, in_msg->sender_id, (const char *)in_msg->payload);
+                
                 char file_buf[ 256 ];
                 extern void fs_read_file_content(const char *filename, char *buffer, uint32_t max_len);
                 fs_read_file_content((const char *)in_msg->payload, file_buf, 256);
@@ -104,6 +111,10 @@ void syscall_handler(uint64_t *sp) {
             }
             else if (in_msg->type == IPC_MSG_FS_WRITE_REQ) {
                 char *filename = (char *)in_msg->payload;
+                
+                /* --- WATCHER LOGGING --- */
+                watcher_log_event(EVENT_TYPE_FS_WRITE, in_msg->sender_id, filename);
+                
                 char *data     = filename;
                 while (*data != '\0') data++;
                 data++;
@@ -119,6 +130,25 @@ void syscall_handler(uint64_t *sp) {
                 out_msg.type      = IPC_MSG_FS_WRITE_RESP;
 
                 const char *success = "Write committed to disk.\n";
+                uint32_t len = 0;
+                while (success[ len ] != '\0') {
+                    out_msg.payload[ len ] = success[ len ];
+                    len++;
+                }
+                out_msg.payload[ len ] = '\0';
+                out_msg.length = len + 1;
+                ipc_kernel_send(&out_msg);
+            }
+            else if (in_msg->type == IPC_MSG_WATCHER_DUMP_REQ) {
+                extern void watcher_dump_history(void);
+                watcher_dump_history(); /* Dumps to the QEMU terminal */
+
+                os_message_t out_msg;
+                out_msg.sender_id = SYS_MOD_KERNEL;
+                out_msg.target_id = in_msg->sender_id;
+                out_msg.type      = IPC_MSG_WATCHER_DUMP_RESP;
+
+                const char *success = "Watcher memory dumped to host UART terminal.\n";
                 uint32_t len = 0;
                 while (success[ len ] != '\0') {
                     out_msg.payload[ len ] = success[ len ];

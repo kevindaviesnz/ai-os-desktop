@@ -125,20 +125,23 @@ ATTR_EL0_RO static const char cmd_help[]  = "help";
 ATTR_EL0_RO static const char cmd_clear[] = "clear";
 
 ATTR_EL0_RO static const char msg_help_1[] = "Available commands:\n";
-ATTR_EL0_RO static const char msg_help_2[] = "  help    - Show this message\n";
-ATTR_EL0_RO static const char msg_help_3[] = "  clear   - Clear the terminal screen\n";
-ATTR_EL0_RO static const char msg_help_4[] = "  s.list  - List directory contents (alias: s.ls)\n";
-ATTR_EL0_RO static const char msg_help_5[] = "  s.read  - Print file contents (Usage: s.read <file>)\n";
-ATTR_EL0_RO static const char msg_help_6[] = "  s.write - Write file (Usage: s.write <file> <data>)\n";
+ATTR_EL0_RO static const char msg_help_2[] = "  help      - Show this message\n";
+ATTR_EL0_RO static const char msg_help_3[] = "  clear     - Clear the terminal screen\n";
+ATTR_EL0_RO static const char msg_help_4[] = "  s.list    - List directory contents (alias: s.ls)\n";
+ATTR_EL0_RO static const char msg_help_5[] = "  s.read    - Print file contents (Usage: s.read <file>)\n";
+ATTR_EL0_RO static const char msg_help_6[] = "  s.write   - Write file (Usage: s.write <file> <data>)\n";
+ATTR_EL0_RO static const char msg_help_7[] = "  agent.why - View OS short-term memory logic\n"; /* Added */
 ATTR_EL0_RO static const char msg_unknown[] = "Unknown command: ";
 
 /* Object-Action Parser Strings explicitly mapped to EL0 */
 ATTR_EL0_RO static const char ns_storage[] = "storage";
 ATTR_EL0_RO static const char ns_s[]       = "s";
+ATTR_EL0_RO static const char ns_agent[]   = "agent"; /* Added */
 ATTR_EL0_RO static const char verb_list[]  = "list";
 ATTR_EL0_RO static const char verb_ls[]    = "ls";
 ATTR_EL0_RO static const char verb_read[]  = "read";
 ATTR_EL0_RO static const char verb_write[] = "write";
+ATTR_EL0_RO static const char verb_why[]   = "why";   /* Added */
 
 ATTR_EL0_RO static const char err_usage_write[] = "Usage: s.write <filename> <data>\n";
 ATTR_EL0_RO static const char err_unk_verb[]    = "Unknown storage verb.\n";
@@ -290,8 +293,8 @@ ATTR_EL0_ENTRY int shell_main(void) {
 
             if (c == '\n') {
                 term_putc(&ctx, c);
-                sys_gpu_flush(); /* Immediately flush UI to prevent freezing on slow disk I/O */
-                cmd_buffer[ cmd_idx ] = '\0'; /* Null-terminate the string */
+                sys_gpu_flush();
+                cmd_buffer[ cmd_idx ] = '\0';
 
                 /* Command Execution Logic */
                 if (cmd_idx > 0) {
@@ -310,7 +313,6 @@ ATTR_EL0_ENTRY int shell_main(void) {
 
                         if (shell_strcmp(cmd_buffer, ns_storage) == 0 || shell_strcmp(cmd_buffer, ns_s) == 0) {
                             
-                            /* s.list or s.ls */
                             if (shell_strcmp(verb, verb_list) == 0 || shell_strcmp(verb, verb_ls) == 0) {
                                 os_message_t req;
                                 req.sender_id = SYS_MOD_GUI_SHELL;
@@ -329,7 +331,6 @@ ATTR_EL0_ENTRY int shell_main(void) {
                                     }
                                 }
                             }
-                            /* s.read */
                             else if (shell_strcmp(verb, verb_read) == 0 && args != 0) {
                                 os_message_t req;
                                 req.sender_id = SYS_MOD_GUI_SHELL;
@@ -361,28 +362,26 @@ ATTR_EL0_ENTRY int shell_main(void) {
                                     }
                                 }
                             }
-                            /* s.write */
                             else if (shell_strcmp(verb, verb_write) == 0 && args != 0) {
                                 char *filename = args;
                                 char *data = shell_strchr(args, ' ');
                                 
                                 if (data) {
-                                    *data = '\0'; /* Terminate filename */
-                                    data++;       /* Move to the data payload */
+                                    *data = '\0'; 
+                                    data++;       
                                     
                                     os_message_t req;
                                     req.sender_id = SYS_MOD_GUI_SHELL;
                                     req.target_id = SYS_MOD_KERNEL;
                                     req.type = IPC_MSG_FS_WRITE_REQ;
                                     
-                                    /* Pack filename and payload into IPC */
                                     int i = 0;
                                     while (filename[ i ] != '\0' && i < 255) {
                                         req.payload[ i ] = filename[ i ];
                                         i++;
                                     }
                                     req.payload[ i ] = '\0';
-                                    i++; /* Move past null terminator */
+                                    i++; 
                                     
                                     int data_start = i;
                                     while (data[ i - data_start ] != '\0' && i < 254) {
@@ -390,7 +389,7 @@ ATTR_EL0_ENTRY int shell_main(void) {
                                         i++;
                                     }
                                     req.payload[ i ] = '\0';
-                                    req.length = i; /* FIX: was i + 1, which overcounted by one */
+                                    req.length = i; 
                                     
                                     sys_ipc_send(&req);
 
@@ -409,11 +408,35 @@ ATTR_EL0_ENTRY int shell_main(void) {
                             } else {
                                 term_print(&ctx, err_unk_verb);
                             }
-                        } else {
+                        } 
+                        /* --- NEW AGENT NAMESPACE LOGIC --- */
+                        else if (shell_strcmp(cmd_buffer, ns_agent) == 0) {
+                            if (shell_strcmp(verb, verb_why) == 0) {
+                                os_message_t req;
+                                req.sender_id = SYS_MOD_GUI_SHELL;
+                                req.target_id = SYS_MOD_KERNEL;
+                                req.type = IPC_MSG_WATCHER_DUMP_REQ;
+                                req.length = 0;
+                                sys_ipc_send(&req);
+
+                                int waiting = 1;
+                                while (waiting) {
+                                    os_message_t resp;
+                                    ipc_receive(&resp);
+                                    if (resp.type == IPC_MSG_WATCHER_DUMP_RESP) {
+                                        term_print(&ctx, (char *)resp.payload);
+                                        waiting = 0;
+                                    }
+                                }
+                            } else {
+                                term_print(&ctx, "Unknown agent verb.\n");
+                            }
+                        }
+                        /* --------------------------------- */
+                        else {
                             term_print(&ctx, err_unk_ns);
                         }
                     } 
-                    /* Clear and Help fallbacks for no-dot commands */
                     else if (shell_strcmp(cmd_buffer, cmd_clear) == 0) {
                         term_clear_screen(&ctx);
                     }
@@ -424,6 +447,7 @@ ATTR_EL0_ENTRY int shell_main(void) {
                         term_print(&ctx, msg_help_4);
                         term_print(&ctx, msg_help_5);
                         term_print(&ctx, msg_help_6);
+                        term_print(&ctx, msg_help_7); /* Show agent.why in help */
                     }
                     else {
                         term_print(&ctx, msg_unknown);
@@ -432,17 +456,16 @@ ATTR_EL0_ENTRY int shell_main(void) {
                     }
                 }
 
-                cmd_idx = 0; /* Reset buffer for the next command */
+                cmd_idx = 0; 
                 term_print(&ctx, msg_prompt);
             } 
             else if (c == '\b') {
                 if (cmd_idx > 0) {
                     cmd_idx--;
-                    term_putc(&ctx, c); /* term_putc handles the visual backspace erasure */
+                    term_putc(&ctx, c); 
                 }
             } 
             else {
-                /* Add printable character to buffer if space allows */
                 if (cmd_idx < CMD_MAX_LEN - 1) {
                     cmd_buffer[ cmd_idx++ ] = c;
                     term_putc(&ctx, c);

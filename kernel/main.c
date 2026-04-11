@@ -1,5 +1,6 @@
 #include "os_types.h"
 #include "os_virtio.h"
+#include "os_watcher.h"
 
 extern void fs_fat32_init(void);
 extern void mmu_init_tables(void);
@@ -39,6 +40,8 @@ void kernel_main(void) {
 
     /* --- Phase 6: Mount the FAT32 File System --- */
     fs_fat32_init();
+    
+    watcher_init();  
     
     extern void fs_read_test_file(void);
     //fs_read_test_file();
