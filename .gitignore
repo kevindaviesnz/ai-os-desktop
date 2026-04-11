@@ -1,0 +1,16 @@
+# Compiled Object files
+*.o
+*.elf
+*.bin
+
+# Build directory
+build/
+
+# Emulated Disk Images
+*.img
+*.qcow2
+
+# OS generated files
+.DS_Store
+.AppleDouble
+.LSOverride
