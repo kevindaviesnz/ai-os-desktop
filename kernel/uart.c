@@ -1,25 +1,40 @@
 #include "os_types.h"
 
+/* QEMU Virt PL011 UART Base Address */
 #define UART0_BASE 0x09000000
+#define UART_DR    ((volatile uint32_t *)(UART0_BASE + 0x000))
+#define UART_FR    ((volatile uint32_t *)(UART0_BASE + 0x018))
 
-void uart_putc(char c) {
-    volatile uint32_t *uart_dr = (volatile uint32_t *)UART0_BASE;
-    *uart_dr = c;
-}
+#define UART_FR_TXFF (1 << 5)  /* Transmit FIFO Full */
+#define UART_FR_RXFE (1 << 4)  /* Receive FIFO Empty */
 
 void uart_print(const char *str) {
-    while (*str) uart_putc(*str++);
+    while (*str) {
+        /* Wait if the transmit FIFO is full */
+        while (*UART_FR & UART_FR_TXFF);
+        *UART_DR = *str++;
+    }
 }
 
-/* New: Hexadecimal formatter for dumping memory addresses and registers */
 void uart_print_hex(uint64_t val) {
-    uart_print("0x");
-    for (int i = 60; i >= 0; i -= 4) {
-        uint8_t nibble = (val >> i) & 0xF;
-        if (nibble < 10) {
-            uart_putc('0' + nibble);
-        } else {
-            uart_putc('A' + (nibble - 10));
-        }
+    const char *hex_chars = "0123456789ABCDEF";
+    char buffer[ 19 ];
+    buffer[ 0 ] = '0';
+    buffer[ 1 ] = 'x';
+    buffer[ 18 ] = '\0';
+    
+    for (int i = 15; i >= 0; i--) {
+        buffer[ 2 + i ] = hex_chars[ val & 0xF ];
+        val >>= 4;
     }
+    uart_print(buffer);
+}
+
+/* --- NEW: The Agent Receiver --- */
+char uart_poll_rx(void) {
+    /* If the Receive FIFO Empty flag is NOT set, we have a byte! */
+    if ((*UART_FR & UART_FR_RXFE) == 0) {
+        return (char)(*UART_DR & 0xFF);
+    }
+    return 0;
 }

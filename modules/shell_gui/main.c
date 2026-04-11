@@ -115,7 +115,6 @@ ATTR_EL0_RO static const uint8_t font8x8[ 95 ][ 8 ] = {
     {0x76,0xDC,0x00,0x00,0x00,0x00,0x00,0x00}  /* ~ */
 };
 
-/* Explicitly locate all command strings in EL0 memory */
 ATTR_EL0_RO static const char msg_init[]   = "ai-os-desktop terminal subsystem initialized.\n";
 ATTR_EL0_RO static const char msg_fb[]     = "Framebuffer rendering active.\n";
 ATTR_EL0_RO static const char msg_wait[]   = "IPC Mailbox Online. Ready for commands.\n\n";
@@ -130,24 +129,23 @@ ATTR_EL0_RO static const char msg_help_3[] = "  clear     - Clear the terminal s
 ATTR_EL0_RO static const char msg_help_4[] = "  s.list    - List directory contents (alias: s.ls)\n";
 ATTR_EL0_RO static const char msg_help_5[] = "  s.read    - Print file contents (Usage: s.read <file>)\n";
 ATTR_EL0_RO static const char msg_help_6[] = "  s.write   - Write file (Usage: s.write <file> <data>)\n";
-ATTR_EL0_RO static const char msg_help_7[] = "  agent.why - View OS short-term memory logic\n"; /* Added */
+ATTR_EL0_RO static const char msg_help_7[] = "  agent.why - View OS short-term memory logic\n"; 
 ATTR_EL0_RO static const char msg_unknown[] = "Unknown command: ";
 
-/* Object-Action Parser Strings explicitly mapped to EL0 */
 ATTR_EL0_RO static const char ns_storage[] = "storage";
 ATTR_EL0_RO static const char ns_s[]       = "s";
-ATTR_EL0_RO static const char ns_agent[]   = "agent"; /* Added */
+ATTR_EL0_RO static const char ns_agent[]   = "agent"; 
 ATTR_EL0_RO static const char verb_list[]  = "list";
 ATTR_EL0_RO static const char verb_ls[]    = "ls";
 ATTR_EL0_RO static const char verb_read[]  = "read";
 ATTR_EL0_RO static const char verb_write[] = "write";
-ATTR_EL0_RO static const char verb_why[]   = "why";   /* Added */
+ATTR_EL0_RO static const char verb_why[]   = "why";   
 
-ATTR_EL0_RO static const char err_usage_write[] = "Usage: s.write <filename> <data>\n";
-ATTR_EL0_RO static const char err_unk_verb[]    = "Unknown storage verb.\n";
-ATTR_EL0_RO static const char err_unk_ns[]      = "Unknown namespace.\n";
+ATTR_EL0_RO static const char err_usage_write[]  = "Usage: s.write <filename> <data>\n";
+ATTR_EL0_RO static const char err_unk_verb[]     = "Unknown storage verb.\n";
+ATTR_EL0_RO static const char err_unk_ns[]       = "Unknown namespace.\n";
+ATTR_EL0_RO static const char err_unk_agent_verb[] = "Unknown agent verb.\n";
 
-/* --- Bare-Metal String Utilities --- */
 ATTR_EL0 static int shell_strcmp(const char *s1, const char *s2) {
     while (*s1 && (*s1 == *s2)) {
         s1++;
@@ -164,7 +162,6 @@ ATTR_EL0 static char *shell_strchr(const char *str, int c) {
     return 0;
 }
 
-/* --- System Calls --- */
 ATTR_EL0 void sys_ipc_send(os_message_t *msg) {
     register uint64_t x0 __asm__("x0") = (uint64_t)msg;
     register uint64_t x8 __asm__("x8") = SYS_IPC_SEND;
@@ -182,7 +179,6 @@ ATTR_EL0 void sys_gpu_flush(void) {
     __asm__ volatile("svc 0" : : "r"(x8) : "memory");
 }
 
-/* --- Rendering Functions --- */
 ATTR_EL0 void term_clear_screen(term_ctx_t *ctx) {
     for (uint32_t i = 0; i < ctx->screen_width * ctx->screen_height; i++) {
         ctx->framebuffer[ i ] = COLOR_BG;
@@ -263,7 +259,6 @@ ATTR_EL0 void term_print(term_ctx_t *ctx, const char *str) {
     }
 }
 
-/* --- Main Shell Execution --- */
 ATTR_EL0_ENTRY int shell_main(void) {
     term_ctx_t ctx;
     ctx.framebuffer   = (uint32_t *)0x20000000;
@@ -280,7 +275,6 @@ ATTR_EL0_ENTRY int shell_main(void) {
 
     sys_gpu_flush();
 
-    /* Command Buffer State */
     char cmd_buffer[ CMD_MAX_LEN ];
     uint32_t cmd_idx = 0;
 
@@ -296,18 +290,16 @@ ATTR_EL0_ENTRY int shell_main(void) {
                 sys_gpu_flush();
                 cmd_buffer[ cmd_idx ] = '\0';
 
-                /* Command Execution Logic */
                 if (cmd_idx > 0) {
                     
-                    /* Object-Action Dot Parser */
                     char *dot = shell_strchr(cmd_buffer, '.');
                     if (dot) {
-                        *dot = '\0'; /* Terminate namespace */
+                        *dot = '\0'; 
                         char *verb = dot + 1;
                         
                         char *args = shell_strchr(verb, ' ');
                         if (args) {
-                            *args = '\0'; /* Terminate verb */
+                            *args = '\0'; 
                             args++;       
                         }
 
@@ -409,7 +401,6 @@ ATTR_EL0_ENTRY int shell_main(void) {
                                 term_print(&ctx, err_unk_verb);
                             }
                         } 
-                        /* --- NEW AGENT NAMESPACE LOGIC --- */
                         else if (shell_strcmp(cmd_buffer, ns_agent) == 0) {
                             if (shell_strcmp(verb, verb_why) == 0) {
                                 os_message_t req;
@@ -429,10 +420,9 @@ ATTR_EL0_ENTRY int shell_main(void) {
                                     }
                                 }
                             } else {
-                                term_print(&ctx, "Unknown agent verb.\n");
+                                term_print(&ctx, err_unk_agent_verb);
                             }
                         }
-                        /* --------------------------------- */
                         else {
                             term_print(&ctx, err_unk_ns);
                         }
@@ -447,7 +437,7 @@ ATTR_EL0_ENTRY int shell_main(void) {
                         term_print(&ctx, msg_help_4);
                         term_print(&ctx, msg_help_5);
                         term_print(&ctx, msg_help_6);
-                        term_print(&ctx, msg_help_7); /* Show agent.why in help */
+                        term_print(&ctx, msg_help_7); 
                     }
                     else {
                         term_print(&ctx, msg_unknown);

@@ -36,9 +36,12 @@ const uint8_t capability_matrix[ 9 ][ 9 ] = {
 
 extern void virtio_gpu_flush(void);
 extern char virtio_input_poll(void);
+extern char uart_poll_rx(void); /* Phase 9: UART RX Poll */
 
 static void drain_hardware_queues(void) {
     char c;
+    
+    /* 1. Drain Physical VirtIO Keyboard */
     while ((c = virtio_input_poll()) != 0) {
         os_message_t hw_msg;
         hw_msg.sender_id = SYS_MOD_KERNEL;
@@ -48,13 +51,30 @@ static void drain_hardware_queues(void) {
         hw_msg.payload[ 0 ] = (uint8_t)c;
         ipc_kernel_send(&hw_msg);
     }
+
+    /* 2. Drain Host UART (The AI Agent Bridge) */
+    while ((c = uart_poll_rx()) != 0) {
+        os_message_t hw_msg;
+        hw_msg.sender_id = SYS_MOD_UART;
+        hw_msg.target_id = SYS_MOD_GUI_SHELL;
+        hw_msg.type = IPC_MSG_KEY_PRESS;
+        hw_msg.length = 1;
+        
+        /* Mac/Python terminals often send Carriage Return (\r) instead of Newline (\n). */
+        if (c == '\r') c = '\n';
+        
+        hw_msg.payload[ 0 ] = (uint8_t)c;
+        ipc_kernel_send(&hw_msg);
+    }
 }
 
 void syscall_handler(uint64_t *sp) {
     uint64_t syscall_num = sp[ 8 ];
     uint64_t arg0        = sp[ 0 ];
 
-    /* Hardware must be drained on EVERY syscall to prevent input deadlocks */
+    /* * THE FIX: Hardware MUST be drained on EVERY syscall (both SEND and RECV).
+     * This ensures the keyboard stays active while the shell is idle-polling.
+     */
     drain_hardware_queues();
 
     if (syscall_num == SYS_GPU_FLUSH) {
@@ -66,7 +86,6 @@ void syscall_handler(uint64_t *sp) {
         if (in_msg->target_id == SYS_MOD_KERNEL) {
 
             if (in_msg->type == IPC_MSG_FS_LIST_REQ) {
-                /* --- WATCHER LOGGING --- */
                 watcher_log_event(EVENT_TYPE_FS_READ, in_msg->sender_id, "ROOT_DIR");
                 
                 char dir_buf[ 256 ];
@@ -88,7 +107,6 @@ void syscall_handler(uint64_t *sp) {
                 ipc_kernel_send(&out_msg);
             }
             else if (in_msg->type == IPC_MSG_FS_READ_REQ) {
-                /* --- WATCHER LOGGING --- */
                 watcher_log_event(EVENT_TYPE_FS_READ, in_msg->sender_id, (const char *)in_msg->payload);
                 
                 char file_buf[ 256 ];
@@ -112,7 +130,6 @@ void syscall_handler(uint64_t *sp) {
             else if (in_msg->type == IPC_MSG_FS_WRITE_REQ) {
                 char *filename = (char *)in_msg->payload;
                 
-                /* --- WATCHER LOGGING --- */
                 watcher_log_event(EVENT_TYPE_FS_WRITE, in_msg->sender_id, filename);
                 
                 char *data     = filename;
@@ -141,7 +158,7 @@ void syscall_handler(uint64_t *sp) {
             }
             else if (in_msg->type == IPC_MSG_WATCHER_DUMP_REQ) {
                 extern void watcher_dump_history(void);
-                watcher_dump_history(); /* Dumps to the QEMU terminal */
+                watcher_dump_history();
 
                 os_message_t out_msg;
                 out_msg.sender_id = SYS_MOD_KERNEL;
