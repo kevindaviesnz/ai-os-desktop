@@ -3,6 +3,7 @@
 
 extern void uart_print(const char *str);
 extern void uart_print_hex(uint32_t val);
+extern int virtio_blk_write_sector(uint64_t sector, const void *buffer);
 
 /* Global FAT32 State Variables */
 static uint32_t bytes_per_cluster;
@@ -10,8 +11,9 @@ static uint32_t fat_start_sector;
 static uint32_t data_start_sector;
 static uint32_t root_dir_cluster;
 
-/* Buffer for disk reads */
+/* Buffers for disk I/O (Allocated in global BSS to prevent kernel stack smashes) */
 static uint8_t disk_buffer[ 512 ] __attribute__((aligned(4096)));
+static uint8_t write_buffer[ 512 ] __attribute__((aligned(4096)));
 
 /* Helper: Converts a FAT32 Cluster Number to a Physical LBA Sector */
 static uint32_t cluster_to_sector(uint32_t cluster) {
@@ -196,4 +198,155 @@ void fs_get_dir_list(char *buffer, uint32_t max_len) {
     
     /* Null-terminate the final string */
     buffer[ pos ] = '\0';
+}
+
+/* Helper: Convert "TEST.TXT" to FAT32 "TEST    TXT" */
+static void format_fat_name(const char *input, char *output) {
+    for (int k = 0; k < 11; k++) output[ k ] = ' '; /* Fill with spaces */
+    
+    int i = 0, j = 0;
+    
+    /* Copy name up to the dot or 8 chars */
+    while (input[ i ] != '\0' && input[ i ] != '.' && j < 8) {
+        /* Convert lowercase to uppercase for basic FAT32 matching */
+        char c = input[ i ];
+        if (c >= 'a' && c <= 'z') c -= 32; 
+        output[ j++ ] = c;
+        i++;
+    }
+    
+    /* Find the dot for the extension */
+    while (input[ i ] != '\0' && input[ i ] != '.') i++;
+    
+    /* Copy extension (up to 3 chars) */
+    if (input[ i ] == '.') {
+        i++;
+        j = 8;
+        while (input[ i ] != '\0' && j < 11) {
+            char c = input[ i ];
+            if (c >= 'a' && c <= 'z') c -= 32;
+            output[ j++ ] = c;
+            i++;
+        }
+    }
+}
+
+/* Find file by name and dump contents into buffer */
+void fs_read_file_content(const char *filename, char *buffer, uint32_t max_len) {
+    char target_name[ 11 ];
+    format_fat_name(filename, target_name);
+    
+    uint32_t root_sector = cluster_to_sector(root_dir_cluster);
+    if (virtio_blk_read_sector(root_sector, disk_buffer) != 0) {
+        buffer[ 0 ] = '\0';
+        return;
+    }
+
+    struct fat32_dir_entry *dir = (struct fat32_dir_entry *)disk_buffer;
+    uint32_t target_cluster = 0;
+    uint32_t target_size = 0;
+
+    for (int i = 0; i < 16; i++) {
+        if (dir[ i ].name[ 0 ] == 0x00) break;
+        
+        int match = 1;
+        for (int j = 0; j < 11; j++) {
+            if (dir[ i ].name[ j ] != target_name[ j ]) match = 0;
+        }
+
+        if (match) {
+            target_cluster = ((uint32_t)dir[ i ].fst_clus_hi << 16) | dir[ i ].fst_clus_lo;
+            target_size = dir[ i ].file_size;
+            break;
+        }
+    }
+
+    if (target_cluster == 0) {
+        /* File not found */
+        const char *err = "File not found.\n";
+        for (uint32_t i = 0; err[ i ] != '\0' && i < max_len - 1; i++) buffer[ i ] = err[ i ];
+        buffer[ 16 ] = '\0'; /* Length of error string */
+        return;
+    }
+
+    /* Read the data cluster */
+    uint32_t data_sector = cluster_to_sector(target_cluster);
+    if (virtio_blk_read_sector(data_sector, disk_buffer) == 0) {
+        uint32_t bytes_to_copy = target_size < (max_len - 1) ? target_size : (max_len - 1);
+        for (uint32_t i = 0; i < bytes_to_copy; i++) {
+            buffer[ i ] = (char)disk_buffer[ i ];
+        }
+        buffer[ bytes_to_copy ] = '\0';
+    }
+}
+
+void fs_write_file_content(const char *filename, const char *data, uint32_t length) {
+    char target_name[ 11 ];
+    format_fat_name(filename, target_name);
+
+    /* 1. Find a free cluster in the FAT table */
+    uint32_t fat_sector = fat_start_sector;
+    if (virtio_blk_read_sector(fat_sector, disk_buffer) != 0) return;
+
+    uint32_t *fat_table = (uint32_t *)disk_buffer;
+    uint32_t free_cluster = 0;
+
+    /* Start looking from cluster 2 (0 and 1 are reserved) */
+    for (uint32_t i = 2; i < 128; i++) {
+        if ((fat_table[ i ] & 0x0FFFFFFF) == 0) {
+            free_cluster = i;
+            fat_table[ i ] = 0x0FFFFFFF; /* Mark as End of File */
+            break;
+        }
+    }
+
+    if (free_cluster == 0) return; /* Disk full or FAT read error */
+
+    /* Save the updated FAT table back to disk */
+    virtio_blk_write_sector(fat_sector, disk_buffer);
+
+    /* 2. Write the actual data to the new data cluster */
+    uint32_t data_sector = cluster_to_sector(free_cluster);
+    
+    /* Clear the global write buffer safely */
+    for(int i = 0; i < 512; i++) write_buffer[ i ] = 0;
+    
+    uint32_t bytes_to_copy = length < 512 ? length : 512;
+    for(uint32_t i = 0; i < bytes_to_copy; i++) write_buffer[ i ] = data[ i ];
+
+    virtio_blk_write_sector(data_sector, write_buffer);
+
+    /* 3. Find a free directory entry in the root directory */
+    uint32_t root_sector = cluster_to_sector(root_dir_cluster);
+    if (virtio_blk_read_sector(root_sector, disk_buffer) != 0) return;
+
+    struct fat32_dir_entry *dir = (struct fat32_dir_entry *)disk_buffer;
+    int free_idx = -1;
+
+    for (int i = 0; i < 16; i++) {
+        /* 0x00 = empty, 0xE5 = deleted file */
+        if (dir[ i ].name[ 0 ] == 0x00 || dir[ i ].name[ 0 ] == (char)0xE5) {
+            free_idx = i;
+            break;
+        }
+    }
+
+    if (free_idx == -1) return; /* Root directory is full */
+
+    /* Populate the directory entry */
+    for (int j = 0; j < 11; j++) dir[ free_idx ].name[ j ] = target_name[ j ];
+    dir[ free_idx ].attr = 0x20; /* 0x20 = Archive flag (standard file) */
+    dir[ free_idx ].nt_res = 0;
+    dir[ free_idx ].crt_time_tenth = 0;
+    dir[ free_idx ].crt_time = 0;
+    dir[ free_idx ].crt_date = 0;
+    dir[ free_idx ].lst_acc_date = 0;
+    dir[ free_idx ].fst_clus_hi = (uint16_t)(free_cluster >> 16);
+    dir[ free_idx ].fst_clus_lo = (uint16_t)(free_cluster & 0xFFFF);
+    dir[ free_idx ].wrt_time = 0;
+    dir[ free_idx ].wrt_date = 0;
+    dir[ free_idx ].file_size = length;
+
+    /* Write the updated directory sector back to disk */
+    virtio_blk_write_sector(root_sector, disk_buffer);
 }

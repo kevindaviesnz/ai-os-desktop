@@ -72,5 +72,6 @@ void fs_fat32_init(void);
 void fs_list_root(void);
 void fs_read_test_file(void);
 void fs_get_dir_list(char *buffer, uint32_t max_len);
+void fs_read_file_content(const char *filename, char *buffer, uint32_t max_len);
 
 #endif
