@@ -130,16 +130,19 @@ ATTR_EL0_RO static const char msg_help_4[] = "  s.list    - List directory conte
 ATTR_EL0_RO static const char msg_help_5[] = "  s.read    - Print file contents (Usage: s.read <file>)\n";
 ATTR_EL0_RO static const char msg_help_6[] = "  s.write   - Write file (Usage: s.write <file> <data>)\n";
 ATTR_EL0_RO static const char msg_help_7[] = "  agent.why - View OS short-term memory logic\n"; 
+ATTR_EL0_RO static const char msg_help_8[] = "  atk.run   - Execute Autarky bytecode (.atk)\n"; 
 ATTR_EL0_RO static const char msg_unknown[] = "Unknown command: ";
 
 ATTR_EL0_RO static const char ns_storage[] = "storage";
 ATTR_EL0_RO static const char ns_s[]       = "s";
 ATTR_EL0_RO static const char ns_agent[]   = "agent"; 
+ATTR_EL0_RO static const char ns_atk[]     = "atk";
 ATTR_EL0_RO static const char verb_list[]  = "list";
 ATTR_EL0_RO static const char verb_ls[]    = "ls";
 ATTR_EL0_RO static const char verb_read[]  = "read";
 ATTR_EL0_RO static const char verb_write[] = "write";
 ATTR_EL0_RO static const char verb_why[]   = "why";   
+ATTR_EL0_RO static const char verb_run[]   = "run";
 
 ATTR_EL0_RO static const char err_usage_write[]  = "Usage: s.write <filename> <data>\n";
 ATTR_EL0_RO static const char err_unk_verb[]     = "Unknown storage verb.\n";
@@ -423,6 +426,37 @@ ATTR_EL0_ENTRY int shell_main(void) {
                                 term_print(&ctx, err_unk_agent_verb);
                             }
                         }
+                        else if (shell_strcmp(cmd_buffer, ns_atk) == 0) {
+                            if (shell_strcmp(verb, verb_run) == 0 && args != 0) {
+                                os_message_t req;
+                                req.sender_id = SYS_MOD_GUI_SHELL;
+                                req.target_id = SYS_MOD_KERNEL;
+                                req.type = IPC_MSG_ATK_EXEC_REQ;
+                                
+                                int i = 0;
+                                while (args[ i ] != '\0' && i < 255) {
+                                    req.payload[ i ] = args[ i ];
+                                    i++;
+                                }
+                                req.payload[ i ] = '\0';
+                                req.length = i + 1;
+                                
+                                sys_ipc_send(&req);
+
+                                int waiting = 1;
+                                while (waiting) {
+                                    os_message_t resp;
+                                    ipc_receive(&resp);
+                                    if (resp.type == IPC_MSG_ATK_EXEC_RESP) {
+                                        term_print(&ctx, (char *)resp.payload);
+                                        term_putc(&ctx, '\n');
+                                        waiting = 0;
+                                    }
+                                }
+                            } else {
+                                term_print(&ctx, "Usage: atk.run <filename>\n");
+                            }
+                        }
                         else {
                             term_print(&ctx, err_unk_ns);
                         }
@@ -438,6 +472,7 @@ ATTR_EL0_ENTRY int shell_main(void) {
                         term_print(&ctx, msg_help_5);
                         term_print(&ctx, msg_help_6);
                         term_print(&ctx, msg_help_7); 
+                        term_print(&ctx, msg_help_8); 
                     }
                     else {
                         term_print(&ctx, msg_unknown);

@@ -29,10 +29,10 @@
 #define IPC_MSG_FS_READ_RESP  7
 #define IPC_MSG_FS_WRITE_REQ  8
 #define IPC_MSG_FS_WRITE_RESP 9
-#define IPC_MSG_FS_WRITE_REQ  8
-#define IPC_MSG_FS_WRITE_RESP 9
-#define IPC_MSG_WATCHER_DUMP_REQ  10  /* Add this */
-#define IPC_MSG_WATCHER_DUMP_RESP 11  /* Add this */
+#define IPC_MSG_WATCHER_DUMP_REQ  10
+#define IPC_MSG_WATCHER_DUMP_RESP 11
+#define IPC_MSG_ATK_EXEC_REQ      12
+#define IPC_MSG_ATK_EXEC_RESP     13
 
 typedef struct {
     uint32_t sender_id;

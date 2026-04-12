@@ -2,10 +2,11 @@ CC = aarch64-elf-gcc
 LD = aarch64-elf-ld
 CFLAGS = -ffreestanding -mcpu=cortex-a53 -mgeneral-regs-only -O2 -Wall -Wextra -Iinclude
 
-# Added kernel/watcher.o here
+# Added kernel/autarky.o to link the VM runtime
 OBJS = kernel/boot.o kernel/vectors.o kernel/main.o kernel/mmu.o \
        kernel/uart.o kernel/gic.o kernel/loader.o kernel/syscall.o \
-       kernel/virtio.o kernel/watcher.o modules/shell_gui/main.o modules/fs/fat32.o
+       kernel/virtio.o kernel/watcher.o kernel/autarky.o \
+       modules/shell_gui/main.o modules/fs/fat32.o
 
 all: build/os_desktop.elf
 

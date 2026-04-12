@@ -7,6 +7,7 @@ extern void mmu_init_tables(void);
 extern void virtio_probe_and_init(void);
 extern void uart_print(const char *str);
 extern void uart_print_hex(uint64_t val);
+extern void autarky_init(void);
 
 extern char _el0_text_start[];
 extern char _el0_stack_top[];
@@ -38,15 +39,10 @@ void kernel_main(void) {
     virtio_probe_and_init();
     uart_print("[BOOT] VirtIO Initialization Complete.\n");
 
-    /* --- Phase 6: Mount the FAT32 File System --- */
     fs_fat32_init();
-    
+    autarky_init();
     watcher_init();  
     
-    extern void fs_read_test_file(void);
-    //fs_read_test_file();
-    /* -------------------------------------------- */
-
     uart_print("[BOOT] Configuring EL0 User Space Drop...\n");
     uart_print("       -> EL0 Entry : "); uart_print_hex((uint64_t)_el0_text_start); uart_print("\n");
     uart_print("       -> EL0 Stack : "); uart_print_hex((uint64_t)_el0_stack_top); uart_print("\n");
@@ -69,7 +65,6 @@ void kernel_main(void) {
     }
 }
 
-/* Custom bare-metal memory copy implementation */
 void *memcpy(void *dest, const void *src, uint32_t n) {
     uint8_t *d = (uint8_t *)dest;
     const uint8_t *s = (const uint8_t *)src;

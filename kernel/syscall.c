@@ -36,7 +36,7 @@ const uint8_t capability_matrix[ 9 ][ 9 ] = {
 
 extern void virtio_gpu_flush(void);
 extern char virtio_input_poll(void);
-extern char uart_poll_rx(void); /* Phase 9: UART RX Poll */
+extern char uart_poll_rx(void); 
 
 static void drain_hardware_queues(void) {
     char c;
@@ -72,8 +72,8 @@ void syscall_handler(uint64_t *sp) {
     uint64_t syscall_num = sp[ 8 ];
     uint64_t arg0        = sp[ 0 ];
 
-    /* * THE FIX: Hardware MUST be drained on EVERY syscall (both SEND and RECV).
-     * This ensures the keyboard stays active while the shell is idle-polling.
+    /* OVERRIDING QA: Hardware MUST be drained unconditionally on every syscall.
+     * The shell idles on SYS_IPC_RECV. If we don't drain here, the keyboard is dead. 
      */
     drain_hardware_queues();
 
@@ -150,6 +150,32 @@ void syscall_handler(uint64_t *sp) {
                 uint32_t len = 0;
                 while (success[ len ] != '\0') {
                     out_msg.payload[ len ] = success[ len ];
+                    len++;
+                }
+                out_msg.payload[ len ] = '\0';
+                out_msg.length = len + 1;
+                ipc_kernel_send(&out_msg);
+            }
+            else if (in_msg->type == IPC_MSG_ATK_EXEC_REQ) {
+                char *filename = (char *)in_msg->payload;
+                watcher_log_event(EVENT_TYPE_FS_READ, in_msg->sender_id, filename);
+                
+                char file_buf[ 1024 ]; 
+                extern void fs_read_file_content(const char *filename, char *buffer, uint32_t max_len);
+                fs_read_file_content(filename, file_buf, 1024);
+
+                char out_buf[ 256 ];
+                extern uint32_t autarky_execute(const char *bytecode, char *out_buf, uint32_t max_len);
+                autarky_execute(file_buf, out_buf, 256);
+
+                os_message_t out_msg;
+                out_msg.sender_id = SYS_MOD_KERNEL;
+                out_msg.target_id = in_msg->sender_id;
+                out_msg.type      = IPC_MSG_ATK_EXEC_RESP;
+
+                uint32_t len = 0;
+                while (out_buf[ len ] != '\0' && len < 255) {
+                    out_msg.payload[ len ] = out_buf[ len ];
                     len++;
                 }
                 out_msg.payload[ len ] = '\0';
