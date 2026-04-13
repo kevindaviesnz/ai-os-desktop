@@ -1,4 +1,8 @@
 #include "os_watcher.h"
+#include "os_fat32.h"
+
+/* MANUAL OVERRIDE: Tell the compiler this exists regardless of header state */
+extern void fs_append_file_content(const char *filename, const char *data, uint32_t length);
 
 extern void uart_print(const char *str);
 extern void uart_print_hex(uint32_t val);
@@ -139,4 +143,36 @@ void watcher_commit_ledger(uint64_t tx_hash, int32_t volume) {
     uart_print("[LEDGER] Receipt Committed: ");
     uart_print(context_buf);
     uart_print("\n");
+}
+
+/* PHASE 15: Persistence Bridge */
+/* Flushes the current volatile ledger entries to LEDGER.LOG on disk */
+void watcher_sync_to_disk(void) {
+    uart_print("[WATCHER] Flushing Ledger to LEDGER.LOG...\n");
+    
+    if (watcher.count == 0) {
+        uart_print("[WATCHER] No entries to sync.\n");
+        return;
+    }
+
+    uint32_t current = watcher.tail;
+    uint32_t synced_count = 0;
+
+    for (uint32_t i = 0; i < watcher.count; i++) {
+        /* Only sync high-integrity LEDGER_COMMIT types */
+        if (watcher.events[ current ].type == EVENT_TYPE_LEDGER_COMMIT) {
+            /* Append the context string (the formatted hash and volume) */
+            int len = 0;
+            while(watcher.events[ current ].context[ len ] != '\0') len++;
+            
+            fs_append_file_content("LEDGER.LOG", watcher.events[ current ].context, len);
+            fs_append_file_content("LEDGER.LOG", "\n", 1);
+            synced_count++;
+        }
+        current = (current + 1) % WATCHER_HISTORY_MAX;
+    }
+    
+    uart_print("[WATCHER] Sync Complete. ");
+    uart_print_hex(synced_count);
+    uart_print(" entries persisted.\n");
 }

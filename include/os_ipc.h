@@ -34,6 +34,8 @@
 #define IPC_MSG_WATCHER_DUMP_RESP 11
 #define IPC_MSG_ATK_EXEC_REQ      12
 #define IPC_MSG_ATK_EXEC_RESP     13
+#define IPC_MSG_WATCHER_SYNC_REQ  14 /* NEW: Phase 15 Sync Request */
+#define IPC_MSG_WATCHER_SYNC_RESP 15 /* NEW: Phase 15 Sync Response */
 
 typedef struct {
     uint32_t sender_id;

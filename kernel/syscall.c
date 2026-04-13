@@ -71,7 +71,6 @@ void syscall_handler(uint64_t *sp) {
     uint64_t syscall_num = sp[ 8 ];
     uint64_t arg0        = sp[ 0 ];
 
-    /* QA FIX: Hardware polling decoupled from IPC entirely. */
     if (syscall_num == SYS_HW_DRAIN) {
         drain_hardware_queues();
     }
@@ -127,10 +126,9 @@ void syscall_handler(uint64_t *sp) {
             }
             else if (in_msg->type == IPC_MSG_FS_WRITE_REQ) {
                 char *filename = (char *)in_msg->payload;
-                
                 watcher_log_event(EVENT_TYPE_FS_WRITE, in_msg->sender_id, filename);
                 
-                char *data     = filename;
+                char *data = filename;
                 while (*data != '\0') data++;
                 data++;
 
@@ -158,7 +156,6 @@ void syscall_handler(uint64_t *sp) {
                 char *filename = (char *)in_msg->payload;
                 watcher_log_event(EVENT_TYPE_FS_READ, in_msg->sender_id, filename);
                 
-                /* QA FIX: Hard buffer boundary explicitly maintained before VM pass */
                 char file_buf[ 1024 ]; 
                 extern void fs_read_file_content(const char *filename, char *buffer, uint32_t max_len);
                 fs_read_file_content(filename, file_buf, 1024);
@@ -191,6 +188,26 @@ void syscall_handler(uint64_t *sp) {
                 out_msg.type      = IPC_MSG_WATCHER_DUMP_RESP;
 
                 const char *success = "Watcher memory dumped to host UART terminal.\n";
+                uint32_t len = 0;
+                while (success[ len ] != '\0') {
+                    out_msg.payload[ len ] = success[ len ];
+                    len++;
+                }
+                out_msg.payload[ len ] = '\0';
+                out_msg.length = len + 1;
+                ipc_kernel_send(&out_msg);
+            }
+            /* PHASE 15: Handle Ledger Sync Request */
+            else if (in_msg->type == IPC_MSG_WATCHER_SYNC_REQ) {
+                extern void watcher_sync_to_disk(void);
+                watcher_sync_to_disk();
+
+                os_message_t out_msg;
+                out_msg.sender_id = SYS_MOD_KERNEL;
+                out_msg.target_id = in_msg->sender_id;
+                out_msg.type      = IPC_MSG_WATCHER_SYNC_RESP;
+
+                const char *success = "Ledger persisted to LEDGER.LOG\n";
                 uint32_t len = 0;
                 while (success[ len ] != '\0') {
                     out_msg.payload[ len ] = success[ len ];

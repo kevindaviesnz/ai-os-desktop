@@ -39,6 +39,7 @@ static ALLOCATOR: BareMetalAllocator = BareMetalAllocator;
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     // 100% stack-allocated. Safe even if the bump allocator has catastrophically failed.
+    // No 'format!' allowed here to prevent recursive OOM double-faults.
     unsafe { 
         uart_print(b"[RUST PANIC] Autarky VM Fault. Core halted to preserve C kernel.\n\0".as_ptr() as *const c_char) 
     };
@@ -52,12 +53,24 @@ pub extern "C" fn autarky_init() {
 }
 
 /* --- BARE METAL CRYPTOGRAPHY (FNV-1a 64-bit) --- */
-fn fnv1a_hash(data: &str) -> u64 {
+/* Updated for Phase 14 Audit: Salts hash with volume and nonce to ensure unique TX IDs */
+fn generate_tx_id(source: &str, volume: i32, nonce: u64) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325; // FNV offset basis
-    for byte in data.bytes() {
+    
+    // 1. Hash the bytecode source
+    for byte in source.bytes() {
         hash ^= byte as u64;
         hash = hash.wrapping_mul(0x100000001b3); // FNV prime
     }
+
+    // 2. Hash the resulting volume
+    hash ^= volume as u64;
+    hash = hash.wrapping_mul(0x100000001b3);
+
+    // 3. Hash the system timer nonce
+    hash ^= nonce;
+    hash = hash.wrapping_mul(0x100000001b3);
+
     hash
 }
 
@@ -124,14 +137,18 @@ pub extern "C" fn autarky_execute(
     // 4. Format Result for C output and Commit to Ledger
     let res_str = match result {
         Ok(val) => {
-            // PHASE 14: Generate Transaction ID based on source bytecode
-            let tx_hash = fnv1a_hash(source);
-            
-            // Extract the integer volume (Default to 0 if it's a non-Int result)
+            // Extract the integer volume
             let volume = match val {
                 vm::Value::Int(v) => v as i32,
                 _ => 0, 
             };
+
+            // Grab a high-precision nonce from the AArch64 System Timer (cntpct_el0)
+            let mut cntpct: u64;
+            unsafe { core::arch::asm!("mrs {}, cntpct_el0", out(reg) cntpct); }
+
+            // Generate a truly unique ID for THIS specific execution
+            let tx_hash = generate_tx_id(source, volume, cntpct);
 
             // Push the immutable receipt across the FFI boundary!
             unsafe { watcher_commit_ledger(tx_hash, volume); }

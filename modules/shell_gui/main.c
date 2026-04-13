@@ -131,18 +131,21 @@ ATTR_EL0_RO static const char msg_help_5[] = "  s.read    - Print file contents 
 ATTR_EL0_RO static const char msg_help_6[] = "  s.write   - Write file (Usage: s.write <file> <data>)\n";
 ATTR_EL0_RO static const char msg_help_7[] = "  agent.why - View OS short-term memory logic\n"; 
 ATTR_EL0_RO static const char msg_help_8[] = "  atk.run   - Execute Autarky bytecode (.atk)\n"; 
+ATTR_EL0_RO static const char msg_help_9[] = "  ledger.sync - Persist VM history to LEDGER.LOG\n"; /* NEW: Phase 15 Help */
 ATTR_EL0_RO static const char msg_unknown[] = "Unknown command: ";
 
 ATTR_EL0_RO static const char ns_storage[] = "storage";
 ATTR_EL0_RO static const char ns_s[]       = "s";
 ATTR_EL0_RO static const char ns_agent[]   = "agent"; 
 ATTR_EL0_RO static const char ns_atk[]     = "atk";
+ATTR_EL0_RO static const char ns_ledger[]  = "ledger"; /* NEW: Phase 15 Namespace */
 ATTR_EL0_RO static const char verb_list[]  = "list";
 ATTR_EL0_RO static const char verb_ls[]    = "ls";
 ATTR_EL0_RO static const char verb_read[]  = "read";
 ATTR_EL0_RO static const char verb_write[] = "write";
 ATTR_EL0_RO static const char verb_why[]   = "why";   
 ATTR_EL0_RO static const char verb_run[]   = "run";
+ATTR_EL0_RO static const char verb_sync[]  = "sync";  /* NEW: Phase 15 Verb */
 
 ATTR_EL0_RO static const char err_usage_write[]  = "Usage: s.write <filename> <data>\n";
 ATTR_EL0_RO static const char err_unk_verb[]     = "Unknown storage verb.\n";
@@ -182,7 +185,6 @@ ATTR_EL0 void sys_gpu_flush(void) {
     __asm__ volatile("svc 0" : : "r"(x8) : "memory");
 }
 
-/* Dedicated syscall wrapper to drain hardware safely during idle/flush loops */
 ATTR_EL0 void sys_hw_drain(void) {
     register uint64_t x8 __asm__("x8") = SYS_HW_DRAIN;
     __asm__ volatile("svc 0" : : "r"(x8) : "memory");
@@ -288,7 +290,6 @@ ATTR_EL0_ENTRY int shell_main(void) {
     uint32_t cmd_idx = 0;
 
     while (1) {
-        /* Idle Hardware Drain */
         sys_hw_drain();
         
         os_message_t msg;
@@ -303,12 +304,10 @@ ATTR_EL0_ENTRY int shell_main(void) {
                 cmd_buffer[ cmd_idx ] = '\0';
 
                 if (cmd_idx > 0) {
-                    
                     char *dot = shell_strchr(cmd_buffer, '.');
                     if (dot) {
                         *dot = '\0'; 
                         char *verb = dot + 1;
-                        
                         char *args = shell_strchr(verb, ' ');
                         if (args) {
                             *args = '\0'; 
@@ -316,7 +315,6 @@ ATTR_EL0_ENTRY int shell_main(void) {
                         }
 
                         if (shell_strcmp(cmd_buffer, ns_storage) == 0 || shell_strcmp(cmd_buffer, ns_s) == 0) {
-                            
                             if (shell_strcmp(verb, verb_list) == 0 || shell_strcmp(verb, verb_ls) == 0) {
                                 os_message_t req;
                                 req.sender_id = SYS_MOD_GUI_SHELL;
@@ -334,7 +332,6 @@ ATTR_EL0_ENTRY int shell_main(void) {
                                         waiting = 0;
                                     }
                                 }
-                                /* QA FIX: Flush UART FIFO post-block to catch AI keystrokes */
                                 sys_hw_drain();
                             }
                             else if (shell_strcmp(verb, verb_read) == 0 && args != 0) {
@@ -342,15 +339,9 @@ ATTR_EL0_ENTRY int shell_main(void) {
                                 req.sender_id = SYS_MOD_GUI_SHELL;
                                 req.target_id = SYS_MOD_KERNEL;
                                 req.type = IPC_MSG_FS_READ_REQ;
-                                
                                 int i = 0;
-                                while (args[ i ] != '\0' && i < 255) {
-                                    req.payload[ i ] = args[ i ];
-                                    i++;
-                                }
-                                req.payload[ i ] = '\0';
-                                req.length = i + 1;
-                                
+                                while (args[ i ] != '\0' && i < 255) { req.payload[ i ] = args[ i ]; i++; }
+                                req.payload[ i ] = '\0'; req.length = i + 1;
                                 sys_ipc_send(&req);
 
                                 int waiting = 1;
@@ -359,11 +350,7 @@ ATTR_EL0_ENTRY int shell_main(void) {
                                     ipc_receive(&resp);
                                     if (resp.type == IPC_MSG_FS_READ_RESP) {
                                         term_print(&ctx, (char *)resp.payload);
-                                        if (resp.length > 1 && resp.payload[ resp.length - 2 ] != '\n') {
-                                            term_putc(&ctx, '\n');
-                                        } else if (resp.length <= 1) {
-                                            term_putc(&ctx, '\n');
-                                        }
+                                        term_putc(&ctx, '\n');
                                         waiting = 0;
                                     }
                                 }
@@ -372,32 +359,18 @@ ATTR_EL0_ENTRY int shell_main(void) {
                             else if (shell_strcmp(verb, verb_write) == 0 && args != 0) {
                                 char *filename = args;
                                 char *data = shell_strchr(args, ' ');
-                                
                                 if (data) {
-                                    *data = '\0'; 
-                                    data++;       
-                                    
+                                    *data = '\0'; data++;       
                                     os_message_t req;
                                     req.sender_id = SYS_MOD_GUI_SHELL;
                                     req.target_id = SYS_MOD_KERNEL;
                                     req.type = IPC_MSG_FS_WRITE_REQ;
-                                    
                                     int i = 0;
-                                    while (filename[ i ] != '\0' && i < 255) {
-                                        req.payload[ i ] = filename[ i ];
-                                        i++;
-                                    }
-                                    req.payload[ i ] = '\0';
-                                    i++; 
-                                    
+                                    while (filename[ i ] != '\0' && i < 255) { req.payload[ i ] = filename[ i ]; i++; }
+                                    req.payload[ i ] = '\0'; i++; 
                                     int data_start = i;
-                                    while (data[ i - data_start ] != '\0' && i < 254) {
-                                        req.payload[ i ] = data[ i - data_start ];
-                                        i++;
-                                    }
-                                    req.payload[ i ] = '\0';
-                                    req.length = i; 
-                                    
+                                    while (data[ i - data_start ] != '\0' && i < 254) { req.payload[ i ] = data[ i - data_start ]; i++; }
+                                    req.payload[ i ] = '\0'; req.length = i; 
                                     sys_ipc_send(&req);
 
                                     int waiting = 1;
@@ -410,12 +383,8 @@ ATTR_EL0_ENTRY int shell_main(void) {
                                         }
                                     }
                                     sys_hw_drain();
-                                } else {
-                                    term_print(&ctx, err_usage_write);
-                                }
-                            } else {
-                                term_print(&ctx, err_unk_verb);
-                            }
+                                } else { term_print(&ctx, err_usage_write); }
+                            } else { term_print(&ctx, err_unk_verb); }
                         } 
                         else if (shell_strcmp(cmd_buffer, ns_agent) == 0) {
                             if (shell_strcmp(verb, verb_why) == 0) {
@@ -425,7 +394,6 @@ ATTR_EL0_ENTRY int shell_main(void) {
                                 req.type = IPC_MSG_WATCHER_DUMP_REQ;
                                 req.length = 0;
                                 sys_ipc_send(&req);
-
                                 int waiting = 1;
                                 while (waiting) {
                                     os_message_t resp;
@@ -436,9 +404,7 @@ ATTR_EL0_ENTRY int shell_main(void) {
                                     }
                                 }
                                 sys_hw_drain();
-                            } else {
-                                term_print(&ctx, err_unk_agent_verb);
-                            }
+                            } else { term_print(&ctx, err_unk_agent_verb); }
                         }
                         else if (shell_strcmp(cmd_buffer, ns_atk) == 0) {
                             if (shell_strcmp(verb, verb_run) == 0 && args != 0) {
@@ -446,17 +412,10 @@ ATTR_EL0_ENTRY int shell_main(void) {
                                 req.sender_id = SYS_MOD_GUI_SHELL;
                                 req.target_id = SYS_MOD_KERNEL;
                                 req.type = IPC_MSG_ATK_EXEC_REQ;
-                                
                                 int i = 0;
-                                while (args[ i ] != '\0' && i < 255) {
-                                    req.payload[ i ] = args[ i ];
-                                    i++;
-                                }
-                                req.payload[ i ] = '\0';
-                                req.length = i + 1;
-                                
+                                while (args[ i ] != '\0' && i < 255) { req.payload[ i ] = args[ i ]; i++; }
+                                req.payload[ i ] = '\0'; req.length = i + 1;
                                 sys_ipc_send(&req);
-
                                 int waiting = 1;
                                 while (waiting) {
                                     os_message_t resp;
@@ -468,13 +427,33 @@ ATTR_EL0_ENTRY int shell_main(void) {
                                     }
                                 }
                                 sys_hw_drain();
+                            } else { term_print(&ctx, "Usage: atk.run <filename>\n"); }
+                        }
+                        else if (shell_strcmp(cmd_buffer, ns_ledger) == 0) {
+                            /* PHASE 15: LEDGER.SYNC Wiring */
+                            if (shell_strcmp(verb, verb_sync) == 0) {
+                                os_message_t req;
+                                req.sender_id = SYS_MOD_GUI_SHELL;
+                                req.target_id = SYS_MOD_KERNEL;
+                                req.type = IPC_MSG_WATCHER_SYNC_REQ; /* Ensure this is defined in os_ipc.h */
+                                req.length = 0;
+                                sys_ipc_send(&req);
+
+                                int waiting = 1;
+                                while (waiting) {
+                                    os_message_t resp;
+                                    ipc_receive(&resp);
+                                    if (resp.type == IPC_MSG_WATCHER_SYNC_RESP) {
+                                        term_print(&ctx, (char *)resp.payload);
+                                        waiting = 0;
+                                    }
+                                }
+                                sys_hw_drain();
                             } else {
-                                term_print(&ctx, "Usage: atk.run <filename>\n");
+                                term_print(&ctx, "Unknown ledger verb.\n");
                             }
                         }
-                        else {
-                            term_print(&ctx, err_unk_ns);
-                        }
+                        else { term_print(&ctx, err_unk_ns); }
                     } 
                     else if (shell_strcmp(cmd_buffer, cmd_clear) == 0) {
                         term_clear_screen(&ctx);
@@ -487,7 +466,8 @@ ATTR_EL0_ENTRY int shell_main(void) {
                         term_print(&ctx, msg_help_5);
                         term_print(&ctx, msg_help_6);
                         term_print(&ctx, msg_help_7); 
-                        term_print(&ctx, msg_help_8); 
+                        term_print(&ctx, msg_help_8);
+                        term_print(&ctx, msg_help_9); 
                     }
                     else {
                         term_print(&ctx, msg_unknown);
@@ -495,26 +475,17 @@ ATTR_EL0_ENTRY int shell_main(void) {
                         term_putc(&ctx, '\n');
                     }
                 }
-
                 cmd_idx = 0; 
                 term_print(&ctx, msg_prompt);
             } 
             else if (c == '\b') {
-                if (cmd_idx > 0) {
-                    cmd_idx--;
-                    term_putc(&ctx, c); 
-                }
+                if (cmd_idx > 0) { cmd_idx--; term_putc(&ctx, c); }
             } 
             else {
-                if (cmd_idx < CMD_MAX_LEN - 1) {
-                    cmd_buffer[ cmd_idx++ ] = c;
-                    term_putc(&ctx, c);
-                }
+                if (cmd_idx < CMD_MAX_LEN - 1) { cmd_buffer[ cmd_idx++ ] = c; term_putc(&ctx, c); }
             }
-
             sys_gpu_flush();
         }
     }
-
     return 0;
 }

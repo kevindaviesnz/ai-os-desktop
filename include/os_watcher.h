@@ -7,6 +7,8 @@
    Keeping this at 64 keeps our kernel memory footprint tiny. */
 #define WATCHER_HISTORY_MAX 64
 
+void watcher_sync_to_disk(void);
+
 /* We categorize events so the AI knows *what* kind of action it was */
 typedef enum {
     EVENT_TYPE_NONE = 0,
