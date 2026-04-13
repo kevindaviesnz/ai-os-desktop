@@ -11,6 +11,7 @@ static uint32_t bytes_per_cluster;
 static uint32_t fat_start_sector;
 static uint32_t data_start_sector;
 static uint32_t root_dir_cluster;
+static uint32_t max_valid_clusters; /* QA FIX: Cycle guard limit */
 
 /* Buffers for disk I/O (Allocated in global BSS to prevent kernel stack smashes) */
 static uint8_t disk_buffer[ 512 ] __attribute__((aligned(4096)));
@@ -44,6 +45,11 @@ void fs_fat32_init(void) {
     uint32_t fat_size = bpb->sectors_per_fat_32;
     data_start_sector = fat_start_sector + (bpb->fat_count * fat_size);
     root_dir_cluster = bpb->root_cluster;
+
+    /* QA FIX: Calculate maximum valid clusters to prevent infinite loops during traversal */
+    uint32_t total_sectors = bpb->total_sectors_32 != 0 ? bpb->total_sectors_32 : bpb->total_sectors_16;
+    max_valid_clusters = total_sectors / bpb->sectors_per_cluster;
+    if (max_valid_clusters == 0) max_valid_clusters = 65536; /* Safety fallback */
 
     uart_print("[FS] FAT32 Mount Successful!\n");
     uart_print("     -> Bytes/Cluster : "); uart_print_hex(bytes_per_cluster); uart_print("\n");
@@ -298,11 +304,12 @@ void fs_write_file_content(const char *filename, const char *data, uint32_t leng
     virtio_blk_write_sector(root_sector, disk_buffer);
 }
 
-/* PHASE 15: Append logic for the Ledger */
+/* PHASE 15: Append logic for the Ledger (with Phase 15.1 Cycle Guard) */
 void fs_append_file_content(const char *filename, const char *data, uint32_t length) {
     char target_name[ 11 ];
     format_fat_name(filename, target_name);
 
+    /* 1. Find the file in the Root Directory */
     uint32_t root_sector = cluster_to_sector(root_dir_cluster);
     if (virtio_blk_read_sector(root_sector, disk_buffer) != 0) return;
 
@@ -316,6 +323,7 @@ void fs_append_file_content(const char *filename, const char *data, uint32_t len
         if (match) { file_idx = i; break; }
     }
 
+    /* If file doesn't exist, fall back to standard write */
     if (file_idx == -1) {
         fs_write_file_content(filename, data, length);
         return;
@@ -324,12 +332,34 @@ void fs_append_file_content(const char *filename, const char *data, uint32_t len
     uint32_t current_cluster = ((uint32_t)dir[ file_idx ].fst_clus_hi << 16) | dir[ file_idx ].fst_clus_lo;
     uint32_t current_size = dir[ file_idx ].file_size;
 
+    /* QA FIX: Cycle Guard for FAT Traversal */
+    uint32_t fat_sector = fat_start_sector;
+    if (virtio_blk_read_sector(fat_sector, disk_buffer) != 0) return;
+    uint32_t *fat_table = (uint32_t *)disk_buffer;
+    uint32_t cycle_guard = 0;
+
+    /* 0x0FFFFFF8 and above represents End of File (EOF) in FAT32 */
+    while ((fat_table[ current_cluster ] & 0x0FFFFFFF) >= 2 && 
+           (fat_table[ current_cluster ] & 0x0FFFFFFF) < 0x0FFFFFF8) {
+        
+        current_cluster = fat_table[ current_cluster ] & 0x0FFFFFFF;
+        cycle_guard++;
+        
+        if (cycle_guard > max_valid_clusters) {
+            uart_print("[FS] FATAL: Circular FAT chain detected! Aborting append.\n");
+            return;
+        }
+    }
+
+    /* 3. Load existing last sector, append data, and write back */
     uint32_t target_sector = cluster_to_sector(current_cluster);
     
     if (virtio_blk_read_sector(target_sector, write_buffer) != 0) return;
     
     uint32_t offset = current_size % 512;
     uint32_t space_left = 512 - offset;
+    
+    /* Simplified append: assumes payload fits within the remaining space of the last sector */
     uint32_t to_copy = length < space_left ? length : space_left;
 
     for (uint32_t i = 0; i < to_copy; i++) {
@@ -338,6 +368,7 @@ void fs_append_file_content(const char *filename, const char *data, uint32_t len
 
     virtio_blk_write_sector(target_sector, write_buffer);
 
+    /* 4. Update Directory Entry Size */
     dir[ file_idx ].file_size += to_copy;
     virtio_blk_write_sector(root_sector, disk_buffer);
 }
