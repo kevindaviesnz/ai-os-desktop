@@ -182,6 +182,12 @@ ATTR_EL0 void sys_gpu_flush(void) {
     __asm__ volatile("svc 0" : : "r"(x8) : "memory");
 }
 
+/* Dedicated syscall wrapper to drain hardware safely during idle/flush loops */
+ATTR_EL0 void sys_hw_drain(void) {
+    register uint64_t x8 __asm__("x8") = SYS_HW_DRAIN;
+    __asm__ volatile("svc 0" : : "r"(x8) : "memory");
+}
+
 ATTR_EL0 void term_clear_screen(term_ctx_t *ctx) {
     for (uint32_t i = 0; i < ctx->screen_width * ctx->screen_height; i++) {
         ctx->framebuffer[ i ] = COLOR_BG;
@@ -282,6 +288,9 @@ ATTR_EL0_ENTRY int shell_main(void) {
     uint32_t cmd_idx = 0;
 
     while (1) {
+        /* Idle Hardware Drain */
+        sys_hw_drain();
+        
         os_message_t msg;
         ipc_receive(&msg);
 
@@ -325,6 +334,8 @@ ATTR_EL0_ENTRY int shell_main(void) {
                                         waiting = 0;
                                     }
                                 }
+                                /* QA FIX: Flush UART FIFO post-block to catch AI keystrokes */
+                                sys_hw_drain();
                             }
                             else if (shell_strcmp(verb, verb_read) == 0 && args != 0) {
                                 os_message_t req;
@@ -356,6 +367,7 @@ ATTR_EL0_ENTRY int shell_main(void) {
                                         waiting = 0;
                                     }
                                 }
+                                sys_hw_drain();
                             }
                             else if (shell_strcmp(verb, verb_write) == 0 && args != 0) {
                                 char *filename = args;
@@ -397,6 +409,7 @@ ATTR_EL0_ENTRY int shell_main(void) {
                                             waiting = 0;
                                         }
                                     }
+                                    sys_hw_drain();
                                 } else {
                                     term_print(&ctx, err_usage_write);
                                 }
@@ -422,6 +435,7 @@ ATTR_EL0_ENTRY int shell_main(void) {
                                         waiting = 0;
                                     }
                                 }
+                                sys_hw_drain();
                             } else {
                                 term_print(&ctx, err_unk_agent_verb);
                             }
@@ -453,6 +467,7 @@ ATTR_EL0_ENTRY int shell_main(void) {
                                         waiting = 0;
                                     }
                                 }
+                                sys_hw_drain();
                             } else {
                                 term_print(&ctx, "Usage: atk.run <filename>\n");
                             }

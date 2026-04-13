@@ -244,6 +244,12 @@ void virtio_probe_and_init(void) {
         volatile uint32_t *devid   = (volatile uint32_t *)(base + 0x008);
         
         if (*magic == VIRTIO_MAGIC && *devid != 0) {
+            
+            /* QA FIX: Bypass the Network Card (ID 1) to prevent double-initialization */
+            if (*devid == 1) {
+                continue; 
+            }
+
             volatile uint32_t *status = (volatile uint32_t *)(base + VIRTIO_REG_STATUS);
 
             if (*devid == VIRTIO_DEV_INPUT) {

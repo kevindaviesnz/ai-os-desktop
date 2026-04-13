@@ -3,12 +3,13 @@
 
 #include "os_types.h"
 
+/* QA FIX: Explicit Gas Limit to prevent EL1 kernel lockup */
 #define ATK_GAS_LIMIT 10000
 
 /* Initializes the Autarky runtime environment */
 void autarky_init(void);
 
-/* * Executes an Autarky bytecode buffer.
+/* Executes an Autarky bytecode buffer.
  * Enforces linear types and O(1) memory traversal.
  * Returns the total gas consumed.
  */

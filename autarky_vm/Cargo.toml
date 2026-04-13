@@ -1,0 +1,12 @@
+[package]
+name = "autarky_vm"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+name = "autarky_core"
+crate-type = ["staticlib"]
+path = "src/lib.rs"
+
+[dependencies]
+# No standard library, no LLVM. Just pure logic.

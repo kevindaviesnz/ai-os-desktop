@@ -13,6 +13,7 @@
 #define SYS_IPC_SEND  1
 #define SYS_IPC_RECV  2
 #define SYS_GPU_FLUSH 3
+#define SYS_HW_DRAIN  4  /* QA FIX: Dedicated Hardware Drain */
 
 /* IPC Return Codes */
 #define IPC_SUCCESS          0

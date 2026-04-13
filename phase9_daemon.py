@@ -5,7 +5,7 @@ import urllib.request
 import json
 import threading
 
-print("[DAEMON] Booting Sovereign Autonomous Agent (Threaded I/O & Defensive Parsing)...")
+print("[DAEMON] Booting Sovereign Autonomous Agent (Threaded I/O, Strict Parsing & Crypto Keys)...")
 
 proc = subprocess.Popen(
     ["make", "run"], 
@@ -17,12 +17,19 @@ proc = subprocess.Popen(
 
 def inject_command(cmd):
     """Simulates the AI typing a command into the OS."""
+    # EXPLICIT MACRO EXPANSION
+    if "$KEY" in cmd:
+        full_key = "#SIG:ATK_COMPILER_V1_8f9b2c"
+        cmd = cmd.replace("$KEY", full_key)
+        print(f"[DAEMON] Macro Expansion Triggered: $KEY -> {full_key}")
+    
     print(f"\n[AGENT ACTION] Typing: '{cmd}'")
     for char in cmd + "\n":
         proc.stdin.write(char)
         proc.stdin.flush()
-        time.sleep(0.05) 
-
+        # Sleep slightly to let the PL011 UART hardware keep up
+        time.sleep(0.02)
+        
 def query_local_llm(memory_dump):
     """Queries the local Ollama instance for the next OS command."""
     prompt = f"""
@@ -40,10 +47,10 @@ def query_local_llm(memory_dump):
     {memory_dump}
     
     RULES:
-    1. If the memory shows a ROOT_DIR list, and 'ENGINE.ATK' is NOT in the directory, you MUST write the bootstrap code. 
-       Output exactly: s.write ENGINE.ATK PUSH 100 BUY PUSH 150 SELL MATCH HALT
-    2. If you see that 'ENGINE.ATK' was just written or read, you MUST execute it.
-       Output exactly: atk.run ENGINE.ATK
+    1. If the memory shows a ROOT_DIR list, and 'MARKET.ATK' is NOT in the directory, you MUST write the signed bootstrap code. 
+       Output exactly: s.write MARKET.ATK $KEY PUSH 100 BUY PUSH 150 SELL MATCH HALT
+    2. If you see that 'MARKET.ATK' was just written or read, you MUST execute it.
+       Output exactly: atk.run MARKET.ATK
     3. YOU MUST OUTPUT ONLY THE EXACT TERMINAL COMMAND.
     4. NO MARKDOWN, NO QUOTES, NO EXPLANATIONS.
     """
@@ -58,22 +65,22 @@ def query_local_llm(memory_dump):
         }
     }).encode('utf-8')
     
-    req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
-    
     try:
+        req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
         with urllib.request.urlopen(req) as response:
             result = json.loads(response.read().decode('utf-8'))
             raw_response = result.get("response", "").strip()
             
-            # Defensive Parsing: Isolate the actual shell command
-            valid_starts = ("s.write", "s.read", "atk.run", "clear", "s.list")
             clean_cmd = None
-            
             for line in raw_response.split('\n'):
-                line = line.strip().replace("```", "").replace("bash", "")
-                if line.startswith(valid_starts):
+                line = line.strip().replace("```", "").replace("bash", "").strip()
+                
+                if line in ("clear", "s.list") or \
+                   line.startswith("s.write MARKET") or \
+                   line.startswith("atk.run MARKET") or \
+                   line.startswith("s.read MARKET"):
+                    
                     clean_cmd = line
-                    # Prioritize action commands if it hallucinates multiple
                     if line.startswith("s.write") or line.startswith("atk.run"):
                         break
                         

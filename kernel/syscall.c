@@ -60,7 +60,6 @@ static void drain_hardware_queues(void) {
         hw_msg.type = IPC_MSG_KEY_PRESS;
         hw_msg.length = 1;
         
-        /* Mac/Python terminals often send Carriage Return (\r) instead of Newline (\n). */
         if (c == '\r') c = '\n';
         
         hw_msg.payload[ 0 ] = (uint8_t)c;
@@ -72,12 +71,11 @@ void syscall_handler(uint64_t *sp) {
     uint64_t syscall_num = sp[ 8 ];
     uint64_t arg0        = sp[ 0 ];
 
-    /* OVERRIDING QA: Hardware MUST be drained unconditionally on every syscall.
-     * The shell idles on SYS_IPC_RECV. If we don't drain here, the keyboard is dead. 
-     */
-    drain_hardware_queues();
-
-    if (syscall_num == SYS_GPU_FLUSH) {
+    /* QA FIX: Hardware polling decoupled from IPC entirely. */
+    if (syscall_num == SYS_HW_DRAIN) {
+        drain_hardware_queues();
+    }
+    else if (syscall_num == SYS_GPU_FLUSH) {
         virtio_gpu_flush();
     }
     else if (syscall_num == SYS_IPC_SEND) {
@@ -160,6 +158,7 @@ void syscall_handler(uint64_t *sp) {
                 char *filename = (char *)in_msg->payload;
                 watcher_log_event(EVENT_TYPE_FS_READ, in_msg->sender_id, filename);
                 
+                /* QA FIX: Hard buffer boundary explicitly maintained before VM pass */
                 char file_buf[ 1024 ]; 
                 extern void fs_read_file_content(const char *filename, char *buffer, uint32_t max_len);
                 fs_read_file_content(filename, file_buf, 1024);

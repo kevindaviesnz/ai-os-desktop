@@ -5,6 +5,7 @@
 extern void fs_fat32_init(void);
 extern void mmu_init_tables(void);
 extern void virtio_probe_and_init(void);
+extern void virtio_net_init(void); 
 extern void uart_print(const char *str);
 extern void uart_print_hex(uint64_t val);
 extern void autarky_init(void);
@@ -37,6 +38,10 @@ void kernel_main(void) {
 
     uart_print("[BOOT] Probing VirtIO Devices...\n");
     virtio_probe_and_init();
+    
+    /* Phase 13: Activate Network Subsystem */
+    virtio_net_init(); 
+    
     uart_print("[BOOT] VirtIO Initialization Complete.\n");
 
     fs_fat32_init();
