@@ -304,7 +304,7 @@ void fs_write_file_content(const char *filename, const char *data, uint32_t leng
     virtio_blk_write_sector(root_sector, disk_buffer);
 }
 
-/* PHASE 15: Append logic for the Ledger (with Phase 15.1 Cycle Guard) */
+/* PHASE 15: Append logic for the Ledger (with Phase 15.1 Cycle Guard AND Safety Fix) */
 void fs_append_file_content(const char *filename, const char *data, uint32_t length) {
     char target_name[ 11 ];
     format_fat_name(filename, target_name);
@@ -334,7 +334,10 @@ void fs_append_file_content(const char *filename, const char *data, uint32_t len
 
     /* QA FIX: Cycle Guard for FAT Traversal */
     uint32_t fat_sector = fat_start_sector;
+    
+    /* DANGER ZONE: This read overwrites disk_buffer, obliterating the root directory data! */
     if (virtio_blk_read_sector(fat_sector, disk_buffer) != 0) return;
+    
     uint32_t *fat_table = (uint32_t *)disk_buffer;
     uint32_t cycle_guard = 0;
 
@@ -368,7 +371,15 @@ void fs_append_file_content(const char *filename, const char *data, uint32_t len
 
     virtio_blk_write_sector(target_sector, write_buffer);
 
-    /* 4. Update Directory Entry Size */
+    /* --- THE CRITICAL SAFETY FIX --- */
+    /* We MUST re-read the root directory from disk before updating it,
+       because the cycle guard loop loaded the FAT table into disk_buffer! */
+    if (virtio_blk_read_sector(root_sector, disk_buffer) != 0) return;
+    
+    /* Re-cast the pointer to the newly loaded directory buffer */
+    dir = (struct fat32_dir_entry *)disk_buffer;
+
+    /* 4. Update Directory Entry Size and save back to disk */
     dir[ file_idx ].file_size += to_copy;
     virtio_blk_write_sector(root_sector, disk_buffer);
 }
