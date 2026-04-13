@@ -18,6 +18,9 @@ pub mod parser;
 extern "C" {
     fn uart_print(str: *const c_char);
     fn bump_allocate(size: u32, align: u32) -> *mut c_void;
+    
+    // PHASE 14: Cryptographic Ledger API
+    fn watcher_commit_ledger(tx_hash: u64, volume: i32); 
 }
 
 /* --- THE RUST GLOBAL ALLOCATOR --- */
@@ -34,9 +37,11 @@ unsafe impl core::alloc::GlobalAlloc for BareMetalAllocator {
 static ALLOCATOR: BareMetalAllocator = BareMetalAllocator;
 
 #[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    let msg = format!("[RUST PANIC] Autarky Engine Crashed: {}\n\0", info);
-    unsafe { uart_print(msg.as_ptr() as *const c_char) };
+fn panic(_info: &PanicInfo) -> ! {
+    // 100% stack-allocated. Safe even if the bump allocator has catastrophically failed.
+    unsafe { 
+        uart_print(b"[RUST PANIC] Autarky VM Fault. Core halted to preserve C kernel.\n\0".as_ptr() as *const c_char) 
+    };
     loop {}
 }
 
@@ -44,6 +49,16 @@ fn panic(info: &PanicInfo) -> ! {
 pub extern "C" fn autarky_init() {
     let msg = b"[ATK-VM] Sovereign Rust Engine Initialized.\n\0";
     unsafe { uart_print(msg.as_ptr() as *const c_char) };
+}
+
+/* --- BARE METAL CRYPTOGRAPHY (FNV-1a 64-bit) --- */
+fn fnv1a_hash(data: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325; // FNV offset basis
+    for byte in data.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3); // FNV prime
+    }
+    hash
 }
 
 /* --- THE EXECUTION ENTRY POINT --- */
@@ -59,7 +74,8 @@ pub extern "C" fn autarky_execute(
     let source = unsafe {
         if bytecode_ptr.is_null() { "" } else {
             let mut len = 0;
-            while *bytecode_ptr.add(len) != 0 && len < 4096 { len += 1; }
+            // Dynamically defer to the max_len passed by the C kernel
+            while *bytecode_ptr.add(len) != 0 && len < (max_len as usize) { len += 1; }
             let slice = core::slice::from_raw_parts(bytecode_ptr as *const u8, len);
             
             // Validate UTF-8 and trim whitespace
@@ -105,9 +121,23 @@ pub extern "C" fn autarky_execute(
     // 3. Evaluate!
     let result = machine.evaluate(&env, &ir_root);
 
-    // 4. Format Result for C output
+    // 4. Format Result for C output and Commit to Ledger
     let res_str = match result {
-        Ok(val) => format!("ATK MATCHED: {:?}\n\0", val),
+        Ok(val) => {
+            // PHASE 14: Generate Transaction ID based on source bytecode
+            let tx_hash = fnv1a_hash(source);
+            
+            // Extract the integer volume (Default to 0 if it's a non-Int result)
+            let volume = match val {
+                vm::Value::Int(v) => v as i32,
+                _ => 0, 
+            };
+
+            // Push the immutable receipt across the FFI boundary!
+            unsafe { watcher_commit_ledger(tx_hash, volume); }
+
+            format!("ATK MATCHED: {:?}\n\0", val)
+        },
         Err(e) => format!("ATK FAULT: {}\n\0", e),
     };
 

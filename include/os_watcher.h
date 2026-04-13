@@ -13,7 +13,8 @@ typedef enum {
     EVENT_TYPE_KEYSTROKE,
     EVENT_TYPE_FS_READ,
     EVENT_TYPE_FS_WRITE,
-    EVENT_TYPE_PROC_SPAWN
+    EVENT_TYPE_PROC_SPAWN,
+    EVENT_TYPE_LEDGER_COMMIT  /* <--- NEW: Cryptographic VM Execution */
 } watcher_event_type_t;
 
 /* A single "Memory" of an event */
@@ -36,5 +37,8 @@ typedef struct {
 void watcher_init(void);
 void watcher_log_event(watcher_event_type_t type, uint32_t pid, const char *context_data);
 void watcher_dump_history(void); /* For debugging what the AI sees */
+
+/* NEW: The Ledger API for the Rust VM */
+void watcher_commit_ledger(uint64_t tx_hash, int32_t volume);
 
 #endif

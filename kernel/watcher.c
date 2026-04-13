@@ -77,3 +77,66 @@ void watcher_dump_history(void) {
     }
     uart_print("===========================\n");
 }
+
+/* --- BARE METAL STRING FORMATTERS --- */
+/* Converts a 64-bit hash into a hex string */
+static void u64_to_hex_str(uint64_t val, char* buf) {
+    const char hex_chars[] = "0123456789ABCDEF";
+    for (int i = 15; i >= 0; i--) {
+        buf[ i ] = hex_chars[ val & 0xF ];
+        val >>= 4;
+    }
+    buf[ 16 ] = '\0';
+}
+
+/* Converts a 32-bit signed volume into a decimal string */
+static void i32_to_dec_str(int32_t val, char* buf) {
+    if (val == 0) { buf[ 0 ] = '0'; buf[ 1 ] = '\0'; return; }
+    int i = 0, is_neg = 0, ti = 0;
+    char temp[ 16 ];
+    
+    if (val < 0) { is_neg = 1; val = -val; }
+    while(val > 0) {
+        temp[ ti++ ] = (val % 10) + '0';
+        val /= 10;
+    }
+    if (is_neg) temp[ ti++ ] = '-';
+    while(ti > 0) {
+        buf[ i++ ] = temp[ --ti ];
+    }
+    buf[ i ] = '\0';
+}
+
+/* --- THE LEDGER VAULT API --- */
+/* This is called directly across the FFI boundary from Rust */
+void watcher_commit_ledger(uint64_t tx_hash, int32_t volume) {
+    char context_buf[ 64 ];
+    char hash_str[ 17 ];
+    char vol_str[ 16 ];
+
+    u64_to_hex_str(tx_hash, hash_str);
+    i32_to_dec_str(volume, vol_str);
+
+    /* Manually concatenate: "TX: 0x[HASH] | VOL: [VOLUME]" */
+    int idx = 0;
+    const char* p1 = "TX: 0x";
+    while(*p1) context_buf[ idx++ ] = *p1++;
+    
+    char* h = hash_str;
+    while(*h) context_buf[ idx++ ] = *h++;
+    
+    const char* p2 = " | VOL: ";
+    while(*p2) context_buf[ idx++ ] = *p2++;
+    
+    char* v = vol_str;
+    while(*v) context_buf[ idx++ ] = *v++;
+    context_buf[ idx ] = '\0';
+
+    /* Commit to the Sovereign Memory Slot (PID 0 = Kernel/VM) */
+    watcher_log_event(EVENT_TYPE_LEDGER_COMMIT, 0, context_buf);
+    
+    /* Print the cryptographic receipt to the serial console */
+    uart_print("[LEDGER] Receipt Committed: ");
+    uart_print(context_buf);
+    uart_print("\n");
+}
