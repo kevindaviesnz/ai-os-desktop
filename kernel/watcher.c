@@ -92,7 +92,6 @@ void watcher_dump_history(void) {
 }
 
 /* --- BARE METAL STRING FORMATTERS --- */
-/* Converts a 64-bit hash into a hex string */
 static void u64_to_hex_str(uint64_t val, char* buf) {
     const char hex_chars[] = "0123456789ABCDEF";
     for (int i = 15; i >= 0; i--) {
@@ -102,7 +101,6 @@ static void u64_to_hex_str(uint64_t val, char* buf) {
     buf[ 16 ] = '\0';
 }
 
-/* Converts a 32-bit signed volume into a decimal string */
 static void i32_to_dec_str(int32_t val, char* buf) {
     if (val == 0) { buf[ 0 ] = '0'; buf[ 1 ] = '\0'; return; }
     int i = 0, is_neg = 0, ti = 0;
@@ -121,7 +119,6 @@ static void i32_to_dec_str(int32_t val, char* buf) {
 }
 
 /* --- THE LEDGER VAULT API --- */
-/* This is called directly across the FFI boundary from Rust */
 void watcher_commit_ledger(uint64_t tx_hash, int32_t volume) {
     char context_buf[ 64 ];
     char hash_str[ 17 ];
@@ -130,7 +127,6 @@ void watcher_commit_ledger(uint64_t tx_hash, int32_t volume) {
     u64_to_hex_str(tx_hash, hash_str);
     i32_to_dec_str(volume, vol_str);
 
-    /* Manually concatenate: "TX: 0x[HASH] | VOL: [VOLUME]" */
     int idx = 0;
     const char* p1 = "TX: 0x";
     while(*p1) context_buf[ idx++ ] = *p1++;
@@ -145,17 +141,14 @@ void watcher_commit_ledger(uint64_t tx_hash, int32_t volume) {
     while(*v) context_buf[ idx++ ] = *v++;
     context_buf[ idx ] = '\0';
 
-    /* Commit to the Sovereign Memory Slot (PID 0 = Kernel/VM) */
     watcher_log_event(EVENT_TYPE_LEDGER_COMMIT, 0, context_buf);
     
-    /* Print the cryptographic receipt to the serial console */
     uart_print("[LEDGER] Receipt Committed: ");
     uart_print(context_buf);
     uart_print("\n");
 }
 
-/* PHASE 15.1: Idempotent Persistence Bridge */
-/* Flushes the current volatile ledger entries to LEDGER.LOG on disk */
+/* PHASE 15.1: Idempotent Persistence Bridge (with Pre-Flight Guard) */
 void watcher_sync_to_disk(void) {
     uart_print("[WATCHER] Flushing Ledger to LEDGER.LOG...\n");
     
@@ -168,20 +161,22 @@ void watcher_sync_to_disk(void) {
     uint32_t synced_count = 0;
 
     while (current != watcher.head) {
-        /* Only sync high-integrity LEDGER_COMMIT types */
-        if (watcher.events[ current ].type == EVENT_TYPE_LEDGER_COMMIT) {
-            /* Append the context string (the formatted hash and volume) */
-            int len = 0;
-            while(watcher.events[ current ].context[ len ] != '\0') len++;
-            
-            fs_append_file_content("LEDGER.LOG", watcher.events[ current ].context, len);
-            fs_append_file_content("LEDGER.LOG", "\n", 1);
-            synced_count++;
+        /* QA PRE-FLIGHT GUARD: Skip uninitialized memory slots */
+        if (watcher.events[ current ].timestamp != 0) {
+            /* Only sync high-integrity LEDGER_COMMIT types */
+            if (watcher.events[ current ].type == EVENT_TYPE_LEDGER_COMMIT) {
+                int len = 0;
+                while(watcher.events[ current ].context[ len ] != '\0') len++;
+                
+                fs_append_file_content("LEDGER.LOG", watcher.events[ current ].context, len);
+                fs_append_file_content("LEDGER.LOG", "\n", 1);
+                synced_count++;
+            }
         }
         current = (current + 1) % WATCHER_HISTORY_MAX;
     }
     
-    /* QA FIX: Update high-water mark so we don't sync these again */
+    /* Update high-water mark so we don't sync these again */
     sync_cursor = watcher.head;
     
     uart_print("[WATCHER] Sync Complete. ");

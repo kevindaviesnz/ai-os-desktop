@@ -9,6 +9,12 @@ pub struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
+
+    pub fn is_eof(&mut self) -> bool {
+        self.skip_whitespace();
+        self.pos >= self.source.len()
+    }
+    
     pub fn new(source: &'a str) -> Self {
         Parser { source, pos: 0 }
     }
@@ -16,12 +22,13 @@ impl<'a> Parser<'a> {
     fn skip_whitespace(&mut self) {
         while self.pos < self.source.len() {
             let c = self.source[self.pos..].chars().next().unwrap();
-            if c.is_whitespace() {
+            
+            if c.is_whitespace() || c.is_control() || c == '\0' {
                 self.pos += c.len_utf8();
-            } else if c == '#' {
-                while self.pos < self.source.len() && self.source[self.pos..].chars().next().unwrap() != '\n' {
-                    self.pos += self.source[self.pos..].chars().next().unwrap().len_utf8();
-                }
+            } else if c == '@' { // <--- CHANGED FROM '#' TO '@'
+                // THE ABSOLUTE QUARANTINE WALL (Bypassing C Shell comments)
+                self.pos = self.source.len();
+                break;
             } else {
                 break;
             }
@@ -36,14 +43,16 @@ impl<'a> Parser<'a> {
             return self.source[self.pos - 2..self.pos].to_string();
         }
         let c = self.source[self.pos..].chars().next().unwrap();
-        if "():={},\\".contains(c) {
+        // ADDED '@' TO THIS LIST SO IT CAN DETACH FROM THE NUMBER
+        if "():={},\\#@".contains(c) {
             self.pos += c.len_utf8();
             return c.to_string();
         }
         let mut word = String::new();
         while self.pos < self.source.len() {
             let c = self.source[self.pos..].chars().next().unwrap();
-            if c.is_whitespace() || "():={},\\#".contains(c) || self.source[self.pos..].starts_with("->") || self.source[self.pos..].starts_with("=>") {
+            // ADDED '@' TO THIS BOUNDARY CHECK LIST TOO
+            if c.is_whitespace() || c.is_control() || c == '\0' || "():={},\\#@".contains(c) || self.source[self.pos..].starts_with("->") || self.source[self.pos..].starts_with("=>") {
                 break;
             }
             word.push(c);
@@ -141,19 +150,14 @@ impl<'a> Parser<'a> {
                 Ok(Expr::Lambda { param: p, param_type: pt, body: Box::new(b) })
             }
             "(" => {
-                // Parse the first expression inside the parens
                 let first = self.parse()?;
-                
-                // Look ahead. If the very next token is a closing paren, this is just a grouping!
                 self.skip_whitespace();
                 if self.pos < self.source.len() && self.source[self.pos..].starts_with(')') {
-                    self.read_word(); // Consume the ')'
-                    return Ok(first); // Return the grouped expression
+                    self.read_word(); 
+                    return Ok(first); 
                 }
-                
-                // Otherwise, it must be an Application: ( Function Argument )
                 let second = self.parse()?;
-                self.read_word(); // Consume the expected ')'
+                self.read_word(); 
                 Ok(Expr::App { func: Box::new(first), arg: Box::new(second), tail_position: false })
             }
             _ => {

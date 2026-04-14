@@ -42,7 +42,7 @@ run: build/os_desktop.elf
 		-device virtio-blk-device,drive=hd0 \
 		-device virtio-gpu-device \
 		-device virtio-keyboard-device \
-		-serial stdio \
 		-kernel build/os_desktop.elf \
 		-netdev socket,id=net0,udp=127.0.0.1:8080,localaddr=127.0.0.1:8081 \
-		-device virtio-net-device,netdev=net0
+		-device virtio-net-device,netdev=net0 \
+		-serial tcp:127.0.0.1:4444,server,nowait

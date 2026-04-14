@@ -107,16 +107,40 @@ pub extern "C" fn autarky_execute(
         return 0;
     }
 
+    // --- QA FIX 3: Defensive Source Logging ---
+    // Safely copy up to 32 bytes into a null-terminated buffer for UART printing
+    unsafe {
+        uart_print(b"[ATK-VM] Source prefix: \0".as_ptr() as *const c_char);
+        let mut log_buf = [0u8; 34];
+        let copy_len = core::cmp::min(source.len(), 32);
+        log_buf[..copy_len].copy_from_slice(&source.as_bytes()[..copy_len]);
+        log_buf[copy_len] = b'\n';
+        log_buf[copy_len + 1] = 0; // Null terminate
+        uart_print(log_buf.as_ptr() as *const c_char);
+    }
+
     // 2. The Autarky Pipeline
     let mut parser = parser::Parser::new(source);
+    
+    // --- QA FIX 2: Better Fallback Parsing ---
     let ast = match parser.parse() {
         Ok(a) => {
+            if !parser.is_eof() {
+                let err_msg = b"[ATK-VM] Parser Error: Trailing characters after expression.\n\0";
+                unsafe { uart_print(err_msg.as_ptr() as *const c_char) };
+                return 0;
+            }
             unsafe { uart_print(b"[ATK-VM] Source parsed successfully.\n\0".as_ptr() as *const c_char) };
             a
         },
         Err(e) => {
-            let err_header = format!("[ATK-VM] Parser Error: {}\n[ATK-VM] Failing Source: >>{}<<\n\0", e, source);
-            unsafe { uart_print(err_header.as_ptr() as *const c_char) };
+            // Check specifically if the error was just an empty EOF
+            if e == "EOF" {
+                unsafe { uart_print(b"[ATK-VM] Error: Empty contract.\n\0".as_ptr() as *const c_char) };
+            } else {
+                let err_header = format!("[ATK-VM] Parser Error: {}\n[ATK-VM] Failing Source: >>{}<<\n\0", e, source);
+                unsafe { uart_print(err_header.as_ptr() as *const c_char) };
+            }
             return 0;
         },
     };
